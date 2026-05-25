@@ -118,7 +118,7 @@ SynthID-Text uses tournament sampling over K candidates at each token step, scor
 
 The connection is direct: **SynthID-Text = PECCAVI with `adaptive_theta=False` and `generations=0`**. This is not a coincidence — both methods implement the watermarked distribution `p_w ∝ p_LM · exp(θ · g(x_t, r_t))`. The novel contribution of PECCAVI is the learned adaptive policy on top of this shared generation mechanism.
 
-Expected result from the `ablation_fixed_s7` experiment (same mechanism, fixed θ=2.0, no REINFORCE): AUC=0.7884. This is the predicted SynthID baseline — the gap between 0.7884 and PECCAVI's 0.97+ quantifies the value of adaptive θ learning.
+Prior estimate from `ablation_fixed_s7` (α=0, θ=2.0, K=16, same tournament mechanism): AUC=0.7884. This is a reasonable prior for SynthID's score — they share the same generation algorithm — but it was run without 4-bit quantization so the actual SynthID result may differ slightly. The actual SynthID run (pending) will confirm.
 
 **Implementation**: `peccavi/auctor_synthid.py` — `SynthIDAuctor(theta=2.0, tournament_k=16)`, which wraps `Auctor` directly. Detection via shared `Custos` scorer. Results pending.
 
@@ -495,13 +495,13 @@ KGW (seed 7 detail): AUC=0.8471, TPR@1%FPR=0.222, PPL_baseline=34.73, PPL_wm=36.
 | PECCAVI (full, attack-aware) | **0.984** | **0.885** | All reward terms + MarianMT survival |
 | PECCAVI (standard, ρ=0) | 0.974 | 0.886 | No attack-aware term |
 | PECCAVI (high-ν, ν=0.6) | 0.963 | 0.685 | Quality-prioritised variant |
-| ablation_fixed_θ | 0.788 | — | No REINFORCE — fixed θ=2.0 (**≈ SynthID baseline**) |
+| ablation_fixed_θ | 0.788 | — | No REINFORCE, α=0, θ frozen at 2.0 (mechanistically close to SynthID but run without 4-bit — not a confirmed SynthID result) |
 | ablation_no_quality (ν=0) | 0.818 | — | Watermark signal only, no quality reward |
 | ablation_no_watermark (λ=0) | 0.498 | — | Sanity check — no watermark term ≈ random |
 | KGW (δ=2.0) | 0.847 | 0.222 | Fixed policy baseline |
 
 **Reading the ablations**:
-- `ablation_fixed_θ` (AUC=0.788) ← this is SynthID-Text. The gap to PECCAVI full (0.984) = **+19.6pp** from REINFORCE learning alone.
+- `ablation_fixed_θ` (AUC=0.788) ← mechanistically close to SynthID-Text (same α=0, θ=2.0, K=16, tournament sampling) but run without 4-bit quantization. Use as a prior for what SynthID will score, not as a confirmed result — the actual SynthID run will confirm or correct this.
 - `ablation_no_quality` (AUC=0.818) ← quality reward contributes +16.6pp vs no-quality.
 - `ablation_no_watermark` (AUC=0.498) ← near-chance; confirms the watermark term drives detection.
 - `attack_aware vs standard` (0.984 vs 0.974) ← MarianMT survival term contributes +1.0pp AUC; the bigger contribution is to attack-specific survival rates (not shown in main AUC).
