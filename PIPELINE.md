@@ -149,15 +149,15 @@ PECCAVI extends all prior baselines with three compounding innovations:
 
 **File**: `backbone/model.py`
 
-All agents share a single `LLaMABackbone` instance. The backbone supports three modes:
+All agents share a single `LLaMABackbone` instance. All experiments use the `transformers` backend with LLaMA-2-7b-chat-hf in 4-bit NF4 quantization.
 
-| Backend | Model | Use Case |
+| Backend | Model | Status |
 |---|---|---|
-| `transformers` | LLaMA-2-7b-chat-hf (4-bit) | Primary — local GPU inference |
-| `openai` | GPT-4o | Baseline comparison |
-| `anthropic` | Claude Sonnet | Baseline comparison |
+| `transformers` | LLaMA-2-7b-chat-hf (4-bit) | **All experiments — primary backbone** |
+| `transformers` | Mistral-7B-Instruct-v0.3 (4-bit) | Configs exist (`mistral_*.yaml`) — generalization claim, not run for submission |
+| `openai` / `anthropic` | GPT-4o, Claude Sonnet, DeepSeek | Defined in `baseline_models:` config section only — never used in actual experiments |
 
-The backbone is loaded once and shared across all agents to avoid redundant GPU memory allocation. 4-bit quantization (bitsandbytes NF4) reduces LLaMA-2-7B from 14GB to ~4GB, making it feasible on T4/A100 GPUs.
+The backbone is loaded once and shared across all agents to avoid redundant GPU memory allocation. 4-bit quantization (bitsandbytes NF4) reduces LLaMA-2-7B from 14GB to ~4GB, making it feasible on A10G/A100 GPUs.
 
 **NaN/Inf Safety**: 4-bit quantized models occasionally produce NaN or Inf logits for unusual token sequences. A `_NanInfClamp` LogitsProcessor is applied during every `model.generate()` call to prevent these from poisoning `torch.multinomial` sampling.
 
