@@ -555,34 +555,3 @@ PPL ratio is the primary weakness. The paper should frame this as an explicit tr
 3. **2024 baseline coverage**: DiPMark (Zhao et al. 2024) and SynthID-Text (Dathathri et al. 2024) comparisons establish PECCAVI's position against the current state of the art, not just 2023 methods.
 4. **KGW-Strong control**: δ=8.0 experiment isolates whether PECCAVI's advantage comes from the learned policy or just from operating at higher effective θ — critical for addressing the theta-saturation reviewer objection.
 
-### Paper Errors to Fix Before Submission
-1. **"Speculative decoding"** → replace throughout with **"inline biased sampling"**. At each autoregressive step, the top-K candidates are drawn from the LM logits and re-weighted via `exp(θ · g(token, seed))` before multinomial selection. No draft model, no verification step.
-2. **Attack survival headline** → use z≥2.0 threshold, not z≥4.0. The latter is 0% for all methods and will confuse reviewers.
-3. **Acknowledge effective_theta cap**: `Auctor` applies `min(theta, 5.0)` during generation. Policy-level θ above 5.0 has no generative effect. Either raise or remove this cap before submission, or add a sentence explaining that the effective signal ceiling is θ=5.0 regardless of policy saturation.
-
-### EMNLP Probability Estimate (honest)
-- **Current state (before new experiments run)**: ~20–25%
-- **After new experiments run and PECCAVI wins cleanly vs 2024 baselines**: ~35–45%
-- The single biggest swing factor: do DiPMark and SynthID score meaningfully below PECCAVI? If DiPMark matches within 2–3pp AUC, the story weakens significantly. If PECCAVI wins by ≥5pp, the paper is competitive for main.
-- PPL ratio (1.508–2.561) and quality score (3.28) are genuine weaknesses that will cost review points. Frame explicitly as tradeoff in paper.
-
----
-
-## 11. Pending Tasks Before Submission
-
-### Critical (blocking submission)
-- [ ] Run 9 GPU experiments: kgw_strong × 3 seeds, dipmark × 3 seeds, synthid × 3 seeds
-- [ ] Fix "speculative decoding" language in paper draft
-- [ ] Fix or justify `effective_theta = min(theta, 5.0)` cap in `peccavi/auctor.py:92`
-- [ ] Update paper Table 1 with DiPMark, SynthID, KGW-Strong result rows
-
-### Important (affects review score)
-- [ ] Change attack robustness headline from z≥4.0 to z≥2.0 throughout paper
-- [ ] Add DiPMark and SynthID to Related Work section (theory in §3.4 above is draft-ready)
-- [ ] Add one paragraph in Limitations acknowledging PPL tradeoff and θ saturation
-- [ ] Verify PECCAVI attack survival at z≥2.0 is meaningfully above KGW/DiPMark (check result JSONs when ready)
-
-### Nice to have
-- [ ] Mistral-7B-Instruct ablation (backbone-agnostic generalization claim)
-- [ ] θ-vs-entropy scatter plot (Figure 2 in paper) — data tracked in `theta_by_prompt` field of result JSONs
-- [ ] Multi-seed averaging for all ablations (currently seed 7 only for ablations)
