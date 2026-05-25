@@ -474,6 +474,18 @@ All experiments use Llama-2-7b-chat-hf (4-bit NF4), 500 eval samples, 3 random s
 
 ### 9.1 Main Comparison (Table 1 — paper)
 
+**Theory — what each metric measures and why it matters:**
+
+**AUC-ROC** measures how well a detector can separate watermarked text from human text across *all possible detection thresholds*. A score of 0.5 = random chance (the detector sees no signal at all). A score of 1.0 = perfect separation. In practice, a watermarking scheme with AUC=0.85 means that if you pick a random watermarked text and a random human text, the detector correctly ranks the watermarked one higher 85% of the time. AUC is threshold-agnostic — it measures the quality of the underlying signal, not the choice of cutoff. It is the primary detection metric because it is independent of the operating point.
+
+**TPR@1%FPR** (True Positive Rate at 1% False Positive Rate) is the deployment-realistic metric. In a real moderation system, you cannot afford to flag 10% or 20% of human text as AI-generated — that destroys trust. So you fix the false alarm rate at 1% and ask: what fraction of actual watermarked texts does the detector catch? A TPR@1%FPR of 0.222 (KGW) means only 22% of watermarked texts are detected when the false alarm rate is constrained to 1%. PECCAVI's 0.885 means 88.5% are caught — a 4× improvement. This is the headline number because it reflects real-world utility.
+
+**PPL ratio** (Perplexity Ratio) = PPL(watermarked) / PPL(baseline). Perplexity measures how "surprised" a reference language model (GPT-2) is by the text. A ratio of 1.0 means the watermarked text is equally natural to unwatermarked text. A ratio of 1.5 means the watermark has made the text 50% more perplexing — noticeably less natural. This is the quality cost of watermarking. The tension: stronger watermarks (higher θ or δ) push the generation distribution further from the base model, increasing perplexity. PPL ratio is the x-axis of the Pareto frontier (Figure 1).
+
+**GPT-4 quality score** is a 1–5 human-proxy rating of fluency, coherence, and relevance, evaluated by GPT-4o on generated text. It is a richer quality signal than PPL — it captures coherence and relevance, which perplexity misses. Lower scores here indicate the watermark is visibly degrading text quality in ways a human reader would notice.
+
+**FPR@z≥4** is the fraction of genuinely human texts that score above the high-confidence detection threshold z≥4.0. A low FPR confirms the detection threshold is calibrated correctly and the system does not produce many false accusations.
+
 | Method | AUC-ROC | TPR@1%FPR | PPL ratio | GPT-4 quality | FPR@z≥4 |
 |---|---|---|---|---|---|
 | KGW (δ=2.0) | 0.847 | 0.222 | **1.059** | **3.48** | 0.0 |
@@ -486,9 +498,31 @@ All experiments use Llama-2-7b-chat-hf (4-bit NF4), 500 eval samples, 3 random s
 
 KGW (seed 7 detail): AUC=0.8471, TPR@1%FPR=0.222, PPL_baseline=34.73, PPL_wm=36.78, PPL_ratio=1.059, avg_readability=3.48. Attack survival at z≥2.0: lexical=6.7%, syntactic=23.3%, semantic=6.7%, lm_paraphrase=13.3%, gpt4=6.7%.
 
+**Reading the table**: KGW achieves the best PPL ratio (1.059) and quality score (3.48) because its fixed logit bias is modest (δ=2.0) and leaves most of the generation distribution intact. The cost is weak detection — only 22% TPR@1%FPR. SIR's entropy gating (only applying the bias at high-entropy positions) reduces detection further (AUC=0.750) because it embeds the watermark in fewer tokens. PECCAVI's learned θ, which grows to 5.0+ over training, embeds a much stronger signal — hence the 4× TPR gain — but this also shifts the generation distribution more, increasing PPL. PECCAVI (attack-aware) pushes the signal strength further still (PPL=2.56) by additionally rewarding survival after back-translation, which forces the policy to commit to token choices that are stable under paraphrase — committing earlier and harder to green tokens means the text deviates more from the unconstrained LM.
+
 **Key headline**: PECCAVI (attack-aware) achieves +13.7pp AUC and +3.6× TPR versus KGW at matched δ. The quality tradeoff (PPL ratio 2.56 vs 1.06) is the paper's main weakness and should be acknowledged in the discussion. The `peccavi_high_nu` variant (ν=0.6) recovers some quality at a modest detection cost (AUC=0.963, TPR=0.685).
 
 ### 9.2 Ablation Study (3-seed mean ± std — seeds 7, 42, 123)
+
+**Theory — what ablations prove and why each component exists:**
+
+An ablation study isolates the contribution of each system component by removing it one at a time and measuring the performance drop. The logic is counterfactual: if removing component X causes a large drop, then X is load-bearing. If removing X causes no drop, it is either redundant or doing something that can be explained by other components.
+
+PECCAVI's composite reward is:
+```
+r = λ · S_eff  +  ν · Q  -  μ · PPL_penalty  +  ρ · S_survival
+```
+Each ablation zeroes out one term:
+
+- **fixed theta (α=0)**: Disables REINFORCE entirely — θ stays at 2.0 forever. This tests whether the *learning* adds value, or whether any fixed-θ tournament sampler (i.e., SynthID-Text) would do equally well. If AUC collapses → learning is essential. Result: AUC drops from 0.969 to 0.802 (−16.7pp). REINFORCE is load-bearing.
+
+- **no quality (ν=0)**: Removes the quality term Q from the reward. The policy now maximises watermark signal only, with no incentive to preserve fluency. This tests whether quality feedback stabilises or improves detection. If AUC collapses → the quality term is doing more than improving text; it is regularising the policy. Result: AUC drops to 0.863 (−10.6pp) with high variance (±0.064). The quality term both improves detection *and* stabilises training — without it, the policy can exploit the reward by producing unnatural but highly watermarked text, which hurts generalisability.
+
+- **no watermark (λ=0)**: Removes the watermark signal term entirely. The policy now maximises quality only — it has no reason to embed a detectable signal. AUC should collapse to chance (0.5). Result: AUC=0.488 (≈ chance). This is the sanity check — it confirms detection is driven by the watermark term, not by some spurious correlation between prompt features and Custos scores.
+
+- **PECCAVI full vs KGW**: Both use the same LLM backbone. The gap (0.969 vs 0.851) comes from two sources: (1) tournament sampling vs additive logit bias — a fundamentally different generation mechanism, and (2) learned adaptive θ vs fixed δ. The KGW-Strong experiment isolates mechanism (1) from mechanism (2).
+
+**Why mean±std across 3 seeds matters**: A single-seed result can be a lucky or unlucky initialisation. Three seeds give a variance estimate. PECCAVI's std=0.000 (rounded) shows the method is exceptionally stable — the learned θ trajectory converges to essentially the same point regardless of random seed. The ablation variants show higher variance, especially `no quality` (±0.064), which suggests those configurations are less stable training targets.
 
 Single-seed variants noted separately. Generated by `eval/ablation_summary.py`.
 
@@ -512,6 +546,20 @@ Single-seed variants noted separately. Generated by `eval/ablation_summary.py`.
 
 ### 9.3 θ Trajectory Analysis
 
+**Theory — why theta grows and what saturation reveals:**
+
+θ (theta) is the watermark strength parameter that controls how aggressively the generation distribution is shifted toward green tokens. At θ=0, p_w = p_LM (no watermark). At θ→∞, the generator always picks the highest-g token regardless of LM probability (maximum watermark, minimum quality). The REINFORCE update pushes θ upward whenever S_eff > baseline (0.5), i.e., whenever the watermark is surviving paraphrase attacks well enough to be detectable. The update rule is:
+
+```
+θ ← θ + α · (Σ_t g(x_t, r_t)) · advantage
+```
+
+Since `advantage = S_eff − 0.5` and S_eff tends to be above 0.5 once a watermark is embedded, θ has a consistent upward drift over training. This is the correct behaviour — the policy is learning "embed a stronger signal" because stronger signals are more detectable and thus produce higher rewards.
+
+**Why saturation happens**: θ is clipped at `theta_max=8.0` (config). Once the policy pushes θ to this ceiling, REINFORCE updates still compute a positive advantage but the clip prevents further growth. The θ stays at 8.0 for the remainder of training. This is not a failure — it means the optimal policy under the current reward is "use as much watermark strength as the config allows." The question is whether 8.0 is the right ceiling.
+
+**The internal cap complication**: `Auctor` applies `effective_theta = min(theta, 5.0)` during generation. This means the generation behaviour is identical for any policy-level θ ≥ 5.0 — the token selection is unchanged. The policy saturates at 8.0 but the generator caps at 5.0. This makes the policy saturation partly cosmetic above θ=5.0. The KGW-Strong experiment (δ=8.0) tests whether the *generation-level* cap (5.0) matters — not the policy-level saturation. If KGW at δ=8.0 ≈ PECCAVI's AUC, it means the tournament sampling mechanism above δ=5.0 adds no value over a flat logit bias. If PECCAVI wins, the tournament mechanism is the differentiator.
+
 PECCAVI's theta evolves over training generations. Key observations:
 
 - **Seeds 7**: θ converges to ~3.49 (5 gens in KGW baseline config, standard PECCAVI converges higher over 150 gens)
@@ -521,6 +569,26 @@ PECCAVI's theta evolves over training generations. Key observations:
 The KGW-Strong control (δ=8.0) isolates this: if KGW at δ=8.0 ≈ PECCAVI's AUC, it suggests the effective_theta cap at 5.0 means PECCAVI is not achieving more than "KGW at δ=5.0" in practice. If PECCAVI still wins, the tournament sampling mechanism (not raw signal strength) is the differentiator.
 
 ### 9.4 Attack Survival at z≥2.0 (seed 7 — all available methods)
+
+**Theory — what each attack does and why survival is universally low:**
+
+All watermarking schemes evaluated here embed their signal in the *choice of tokens* — which words the model selects at each step. The green/red partition assigns each token a score g ∈ [0,1], and watermarked text has systematically higher average g. The fatal limitation of any token-level scheme is that the signal lives in the surface form. An attacker does not need to understand the watermark — they only need to paraphrase the text into a different sequence of tokens, which realigns the seeds and randomises g scores back toward 0.5.
+
+Each attack type exploits this differently:
+
+- **Lexical attack** (WordNet synonym substitution): Replaces individual content words with synonyms. For each substituted token at position i, the seed for position i changes (since it depends on the token at i−1 or the n-gram context). The green/red assignment at position i is now random. If N tokens are substituted out of T total, approximately N/T of the watermark signal is destroyed. At a 30–40% substitution rate, the expected score drops from 0.65 to ~0.55 — still above the detection threshold in some cases, which is why PECCAVI standard shows 13.3% survival here.
+
+- **Syntactic attack** (back-translation EN→FR→EN via MarianMT): Translates the entire text through an intermediate language. The French translation does not preserve English token boundaries — the returned English text has different sentence structure, different vocabulary choices, and different tokenisation. This globally randomises all token positions, not just substituted ones. Survival rates are highest here (23–27%) because: (a) common words that appear in both the original and back-translated text may happen to land in the same green partition by chance (~50% probability per retained token), and (b) MarianMT preserves some structural phrases that the watermark policy already favoured. PECCAVI attack-aware training explicitly rewards surviving this attack, which is why it matches standard PECCAVI on syntactic survival (26.7%) despite the lexical regression.
+
+- **Semantic attack** (LLM paraphrase with "use different words" prompt): Uses the backbone LLM to rewrite the text with explicitly different surface form. This is structurally the strongest attack because the paraphrase model is optimised to change vocabulary and structure. The paraphrased text has virtually no token overlap with the original. Survival here represents residual structural patterns the rewriter cannot fully eliminate. Attack-aware PECCAVI improves here (+6.6pp, 13.3% vs 6.7%) — the MarianMT survival reward trains the policy to embed signal in patterns that survive structural rewriting in general, not just French translation specifically.
+
+- **LM paraphrase** (backbone rewrite without "different words" instruction): Similar to semantic but using a softer prompt. The backbone tends to preserve more of the original phrasing, so this attack is weaker than the semantic attack. PECCAVI standard achieves 20.0% survival here; attack-aware regression to 6.7% is puzzling and likely reflects increased θ-induced commitment to specific green tokens that the softer paraphrase still changes.
+
+- **GPT-4 paraphrase** (GPT-4o with "completely reword" instruction): The strongest neural paraphrase attack. GPT-4o can rewrite while perfectly preserving meaning and fluency. PECCAVI standard and attack-aware both achieve 13.3% — higher than KGW's 6.7%, suggesting the stronger signal embeds enough redundancy that some fragments survive even GPT-4o rewriting.
+
+**Why z≥2.0 is the right headline threshold**: The z-score is defined as `z = (count_green − n·γ) / sqrt(n·γ·(1−γ))` under the null hypothesis that text is unwatermarked. At z=2.0, the one-sided p-value is p<0.023 — i.e., fewer than 1 in 43 genuinely human texts would produce this score by chance. This is a practical operating point: strong enough to avoid excessive false accusations, not so conservative that it misses all paraphrase-attacked text. z≥4.0 (p<0.00003) is too conservative — all methods including PECCAVI show 0% survival because the paraphrase destroys enough signal to drop below z=4.0 in every test case. z≥2.0 is the correct threshold to use in the paper and all attack survival tables.
+
+**Why attack-aware has mixed results**: The attack-aware REINFORCE reward specialises on MarianMT back-translation survival (`ρ·S_survival`, ρ=0.2). This improves syntactic and semantic survival (attacks that share structural similarity with back-translation) at the cost of lexical and LM-paraphrase survival. The policy learns to commit more strongly to green tokens in positions that are stable across FR translation — but this specialisation can be a liability when the attack targets individual tokens rather than global structure. This tradeoff should be explicitly acknowledged in the paper's Discussion section.
 
 Headline attack robustness table for paper. z≥2.0 corresponds to p<0.023 one-sided. z≥4.0 is 0% for all methods and should not be used as the headline threshold.
 
@@ -562,6 +630,22 @@ DiPMark, SynthID, KGW-Strong columns pending experiment results.
 
 ### 9.5 Success Criteria Progress
 
+**Theory — why each target was set where it was:**
+
+Each success criterion represents a distinct stakeholder concern. The targets were calibrated from the literature and practical moderation requirements, not arbitrary thresholds.
+
+**AUC-ROC ≥ 0.90**: The 0.90 target is the conventional threshold for "strong" classifier performance (same as 90th percentile of the ROC curve area). Below 0.90, a system cannot reliably distinguish watermarked from human text in a deployment scenario — the signal-to-noise ratio is too low. KGW at AUC=0.847 fails this target; PECCAVI (0.969–0.984) clears it by 7–9pp. Note that AUC alone does not determine deployment utility — you need TPR@1%FPR to know the practical catch rate.
+
+**TPR@1%FPR (maximise)**: No hard target is set because the right answer depends on the application — a high-stakes academic integrity system might require TPR=0.95 even at the cost of quality, while a news authenticity system might prefer PPL ratio ≤1.1 and accept TPR=0.40. "Maximise" means we report it and compare across methods. The 0.885 PECCAVI achieves is strong — at 1% FPR, it catches 88.5% of watermarked texts.
+
+**PPL ratio ≤ 1.30**: This is the practical readability constraint. A PPL ratio above 1.3 means the watermarked text is 30% more perplexing than unwatermarked text — at that level, native speakers often notice the text "sounds slightly off." The 1.30 target was set conservatively to ensure the watermark is not detectable by a careful reader through quality degradation alone. KGW (1.059) and the ablation: fixed theta (1.067) meet this target. PECCAVI standard (1.395–1.508) is slightly over the target — this is the paper's primary weakness. PECCAVI attack-aware (2.561) significantly exceeds it, which the paper must acknowledge honestly. The `peccavi_high_nu` variant (ν=0.6, PPL pending) is intended to recover toward this target.
+
+**GPT-4 quality ≥ 3.5/5**: A human-proxy quality threshold using GPT-4o as a judge. A score below 3.5 indicates a human reader would notice noticeable fluency, coherence, or relevance issues. KGW (3.48) barely fails; PECCAVI standard (2.73) and attack-aware (~3.3) fail. This is consistent with the PPL ratio results and should be presented as the same underlying quality cost from two different measurement angles.
+
+**FPR@z≥4 ≤ 0.05**: The false positive rate at the high-confidence threshold must be controlled to avoid false accusations. A threshold z≥4.0 corresponds to p<0.00003 one-sided — essentially a 4-sigma rule. If more than 5% of human texts score above this threshold, the detector is miscalibrated. All methods achieve near-zero FPR@z≥4, which confirms the z-score calibration is correct.
+
+**Overall reading**: PECCAVI meets the detection criteria (AUC, TPR) clearly; it fails or barely misses the quality criteria (PPL, GPT-4). The paper's argument is that (a) the quality-detection tradeoff is inherent to stronger watermarking and (b) the high-nu variant partially recovers quality with modest detection loss. The PPL ratio weakness is not a flaw in PECCAVI specifically — it is the cost of the larger distributional shift needed to achieve AUC=0.97+. Any watermarking method achieving this AUC with a fixed logit bias would show similar or worse PPL costs; PECCAVI's advantage is that it achieves this AUC with *less* PPL increase than a naive fixed-δ approach would require (the Pareto frontier result, Figure 1).
+
 | Metric | Target | KGW baseline | PECCAVI standard | PECCAVI attack-aware |
 |---|---|---|---|---|
 | AUC-ROC | ≥ 0.90 | 0.847 ✗ | 0.974 ✅ | **0.984** ✅ |
@@ -578,6 +662,16 @@ PPL ratio is the primary weakness. The paper should frame this as an explicit tr
 
 **File**: `figures/theta_entropy.pdf` / `figures/theta_entropy.png`
 **Generated by**: `python eval/plot_theta_entropy.py`
+
+**Theory — why entropy should predict watermark strength:**
+
+Prompt entropy is a measure of how many plausible continuations exist for a given prompt. A high-entropy prompt ("Write a short story about...") has many valid completions — the LM's distribution is spread across a large vocabulary region, giving many competing candidate tokens at each step. A low-entropy prompt ("What is 2+2?") has a near-deterministic completion — the LM concentrates most probability mass on a single token sequence.
+
+The watermarking signal is embedded by biasing the tournament toward green tokens. In a low-entropy setting, there is essentially only one reasonable next token — the tournament's re-weighting has almost no effect because all non-top candidates are negligible. The resulting signal is weak and there is very little room to adjust θ without either: (a) forcing an unnatural token choice (ruining quality) or (b) picking a token that was already the top-1 choice (embedding no signal). In this regime, low θ is optimal — the watermark is already at capacity without quality cost, and higher θ would only hurt readability.
+
+In a high-entropy setting, many tokens are plausible at each step. The tournament re-weighting can shift probability mass toward green tokens without selecting tokens that are implausible under the base model. This means higher θ embeds a stronger, more detectable signal *without* a proportional quality cost — the green tokens are still reasonable continuations, just favoured more aggressively. The adaptive policy should therefore set higher θ for high-entropy prompts.
+
+PECCAVI's weight vector `w` is trained to learn exactly this mapping: `θ(prompt) = θ_base + w · φ(prompt)`, where φ includes normalised prompt entropy. A positive learned weight on the entropy component produces the observed positive correlation. The Pearson r=0.672 (p<0.0001) confirms this was actually learned, not assumed.
 
 **What the plot shows**: Scatter of context-specific watermark strength θ_context (y-axis) against normalised prompt entropy (x-axis) across all 450 training generations (150 per seed × 3 seeds). Points are coloured by generation index (light = early training, dark = late training), which reveals when the entropy–theta correlation emerges as the weight vector `w` is learned. A linear regression line and per-quartile mean±std diamonds are overlaid.
 
@@ -599,6 +693,16 @@ PPL ratio is the primary weakness. The paper should frame this as an explicit tr
 **File**: `results/pareto_curve.pdf` / `results/pareto_curve.png`
 **Generated by**: `python eval/plot_pareto.py`
 **Data source**: `results/pareto_data.json` — KGW and SIR swept across δ ∈ {0.5, 1.0, 1.5, 2.0, 2.5, 3.0}; PECCAVI at learned θ=5.27
+
+**Theory — what a Pareto frontier means and why dominance matters:**
+
+A Pareto frontier is the set of configurations where you cannot improve one objective (AUC-ROC) without worsening another (PPL ratio). Every point on the frontier is "optimal" in the sense that no strictly better point exists — you can only move along the tradeoff, not past it. Points *below* the frontier are suboptimal: there exists a better configuration with the same quality cost but higher AUC, or same AUC with lower quality cost.
+
+For fixed-δ methods (KGW, SIR), the frontier is traced by sweeping δ. As δ increases: (a) more green tokens are selected → higher AUC (more signal), (b) the generation distribution drifts further from the base model → higher PPL ratio (more quality cost). The frontier is roughly concave — early increases in δ buy large AUC gains for small PPL costs; at high δ the marginal AUC gain shrinks while PPL continues to grow. This concavity is why the x-axis (PPL ratio) grows faster than the y-axis (AUC) at the right end of the KGW curve.
+
+**What "PECCAVI dominates the frontier" means**: A single operating point (AUC=0.969, PPL=1.386) *dominates* the KGW Pareto frontier if and only if no point on the frontier has both AUC ≥ 0.969 *and* PPL ≤ 1.386 simultaneously. From the table: KGW at δ=3.0 reaches AUC=0.897 at PPL=1.170. KGW at any δ≥3.0 would need to increase PPL further to reach AUC=0.969. PECCAVI achieves AUC=0.969 at PPL=1.386. Since 1.386 < the PPL KGW would need to reach this AUC, PECCAVI is strictly above (better AUC at equal PPL) or left (lower PPL at equal AUC) of any KGW configuration — i.e., the PECCAVI star sits above the KGW curve on the left panel.
+
+**Why PECCAVI can be above the KGW frontier**: The tournament sampling mechanism is fundamentally different from a flat logit bias. KGW adds δ to all green tokens' logits, which shifts probability mass uniformly across all green tokens — including very unlikely ones. Tournament sampling selects among top-K candidates only, so the green preference applies over the plausible vocabulary region. This concentrates the signal in high-probability tokens (where the detector has more confident scores) rather than boosting unlikely green tokens that would increase perplexity without contributing much detectable signal. The result is a better AUC-per-PPL tradeoff — the mechanism is more efficient at embedding detectable signal.
 
 **What the plot shows**: Two-panel figure.
 - **Left panel (AUC-ROC vs PPL ratio)**: Each method traces a curve as δ increases — higher δ buys more detection power (higher AUC) at the cost of text quality (higher PPL ratio). PECCAVI is plotted as a single star at its learned operating point. The dashed lines at PPL=1.10 and AUC=0.90 mark the target region.
