@@ -15,6 +15,8 @@ from peccavi.praeco import Praeco
 from peccavi.auctor import Auctor
 from peccavi.auctor_kgw import KGWAuctor
 from peccavi.auctor_sir import SIRAuctor
+from peccavi.auctor_dipmark import DiPMarkAuctor
+from peccavi.auctor_synthid import SynthIDAuctor
 from peccavi.scriba import Scriba
 from peccavi.custos import Custos
 from peccavi.magister import Magister
@@ -48,6 +50,10 @@ def run_peccavi(
     sir_delta: float = 2.0,
     sir_gamma: float = 0.5,
     sir_entropy_threshold: float = 1.0,
+    dipmark_delta: float = 2.0,
+    dipmark_gamma: float = 0.5,
+    dipmark_window: int = 5,
+    synthid_tournament_k: int = 8,
     lam: float = 0.6,
     nu: float = 0.4,
     mu_ppl: float = 0.0,
@@ -73,6 +79,14 @@ def run_peccavi(
             backbone, delta=sir_delta, gamma=sir_gamma,
             entropy_threshold=sir_entropy_threshold,
         )
+        magister = None
+    elif watermark_mode == "dipmark":
+        generator = DiPMarkAuctor(backbone, delta=dipmark_delta, gamma=dipmark_gamma,
+                                  window=dipmark_window)
+        magister = None
+    elif watermark_mode == "synthid":
+        generator = SynthIDAuctor(backbone, theta=theta_init,
+                                  tournament_k=synthid_tournament_k)
         magister = None
     elif watermark_mode == "none":
         generator = None
@@ -100,12 +114,12 @@ def run_peccavi(
                 context_theta = magister.compute_theta(features)
                 generator.theta = context_theta
                 wm_text = generator.generate(prompt, max_tokens=100)
-            elif watermark_mode in ("kgw", "sir"):
+            elif watermark_mode in ("kgw", "sir", "dipmark", "synthid"):
                 wm_text = generator.generate(prompt, max_tokens=100)
             else:
                 wm_text = backbone.generate(prompt, max_new_tokens=100)["text"]
 
-            if watermark_mode in ("kgw", "sir"):
+            if watermark_mode in ("kgw", "sir", "dipmark"):
                 original_score = (generator.z_score(wm_text) + 10) / 20  # normalise z to [0,1] approx
             else:
                 original_score = custos.watermark_score(wm_text)
@@ -115,7 +129,7 @@ def run_peccavi(
             z_eff = custos.effective_z_score(paraphrases)
 
             z_threshold = 4.0
-            if watermark_mode in ("kgw", "sir"):
+            if watermark_mode in ("kgw", "sir", "dipmark"):
                 para_z = [generator.z_score(p) for p in paraphrases]
             else:
                 para_z = [custos.z_score(p) for p in paraphrases]
@@ -210,7 +224,7 @@ def run_peccavi(
                 generator.theta = magister.compute_theta(featurizer.extract(p))
             wm_texts_eval.append(generator.generate(p, max_tokens=100))
 
-    use_generator_z = watermark_mode in ("kgw", "sir")
+    use_generator_z = watermark_mode in ("kgw", "sir", "dipmark")
     if use_generator_z:
         z_scores_all = (
             [generator.z_score(t) for t in baseline_texts]

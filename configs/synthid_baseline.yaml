@@ -1,0 +1,32 @@
+# configs/synthid_baseline.yaml
+# SynthID-Text baseline (Dathathri et al., 2024, Google DeepMind).
+# Fixed-theta tournament sampling — identical mechanism to PECCAVI but without
+# the REINFORCE adaptive policy. This is the direct ablation for PECCAVI's
+# adaptive theta learning contribution.
+# Run: python main.py --mode synthid --config-file configs/synthid_baseline.yaml \
+#          --output results/synthid_s7.json --seed 7
+
+model:
+  backbone: "meta-llama/Llama-2-7b-chat-hf"
+  backend: "transformers"
+  api_key: null
+  load_in_4bit: true
+  device: "auto"
+
+watermarking:
+  theta_init: 2.0
+  tournament_k: 16
+  secret_key: "PECCAVI-SECRET"
+  watermark_mode: "synthid"
+
+agents:
+  scriba_n_variants: 10
+
+policy_learning:
+  generations: 5
+  n_eval_samples: 500
+
+success_criteria:
+  watermark_retention_pct: 51
+  detection_auc_roc: 0.90
+  human_readability_min: 3.0

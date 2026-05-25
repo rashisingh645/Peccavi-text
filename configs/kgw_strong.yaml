@@ -1,0 +1,30 @@
+# configs/kgw_strong.yaml
+# KGW with delta=8.0 — the ceiling PECCAVI's theta reaches in saturated seeds.
+# Purpose: ablation to prove PECCAVI's adaptive policy adds value beyond "just set delta high".
+# Run: python main.py --mode kgw --config-file configs/kgw_strong.yaml \
+#          --output results/kgw_strong_s7.json --seed 7
+
+model:
+  backbone: "meta-llama/Llama-2-7b-chat-hf"
+  backend: "transformers"
+  api_key: null
+  load_in_4bit: true
+  device: "auto"
+
+watermarking:
+  delta: 8.0
+  gamma: 0.5
+  secret_key: "PECCAVI-SECRET"
+  watermark_mode: "kgw"
+
+agents:
+  scriba_n_variants: 10
+
+policy_learning:
+  generations: 5
+  n_eval_samples: 500
+
+success_criteria:
+  watermark_retention_pct: 51
+  detection_auc_roc: 0.90
+  human_readability_min: 3.0

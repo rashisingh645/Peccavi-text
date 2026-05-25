@@ -125,7 +125,8 @@ def mode_eval(backbone, args):
 def mode_kgw(backbone, args):
     """Run KGW baseline evaluation."""
     from eval.watermark import run_peccavi
-    cfg = load_config(os.path.join(args.config_dir, "kgw_baseline.yaml"))
+    cfg_file = getattr(args, "config_file", None)
+    cfg = load_config(cfg_file if cfg_file else os.path.join(args.config_dir, "kgw_baseline.yaml"))
     wm_cfg = cfg.get("watermarking", {})
     pl_cfg = cfg.get("policy_learning", {})
     seed = getattr(args, "seed", 42)
@@ -188,6 +189,80 @@ def mode_sir(backbone, args):
 
     logger.info(
         f"SIR done. AUC-ROC={summary['auc_roc']:.4f} | "
+        f"FPR={summary['false_positive_rate']:.4f} | "
+        f"S_eff={summary['effective_score_final']:.4f} | "
+        f"PPL_ratio={summary.get('ppl_ratio', 'N/A')}"
+    )
+
+
+def mode_dipmark(backbone, args):
+    """Run DiPMark (Zhao et al., 2024) baseline evaluation."""
+    from eval.watermark import run_peccavi
+    cfg_file = getattr(args, "config_file", None)
+    cfg = load_config(cfg_file if cfg_file else os.path.join(args.config_dir, "dipmark_baseline.yaml"))
+    wm_cfg = cfg.get("watermarking", {})
+    pl_cfg = cfg.get("policy_learning", {})
+    seed = getattr(args, "seed", 42)
+
+    logger.info("Running DiPMark baseline evaluation...")
+    summary = run_peccavi(
+        backbone,
+        generations=pl_cfg.get("generations", 5),
+        n_paraphrases=cfg.get("agents", {}).get("scriba_n_variants", 10),
+        n_eval_samples=pl_cfg.get("n_eval_samples", 100),
+        verbose=True,
+        theta_init=wm_cfg.get("theta_init", 2.0),
+        watermark_mode="dipmark",
+        dipmark_delta=wm_cfg.get("delta", 2.0),
+        dipmark_gamma=wm_cfg.get("gamma", 0.5),
+        dipmark_window=wm_cfg.get("window", 5),
+        seed=seed,
+    )
+
+    output_path = getattr(args, "output", "./results/dipmark_baseline.json")
+    os.makedirs(os.path.dirname(output_path), exist_ok=True)
+    with open(output_path, "w") as f:
+        report = {"dipmark_baseline": _sanitize({k: v for k, v in summary.items() if k != "detailed_records"})}
+        json.dump(report, f, indent=2)
+
+    logger.info(
+        f"DiPMark done. AUC-ROC={summary['auc_roc']:.4f} | "
+        f"FPR={summary['false_positive_rate']:.4f} | "
+        f"S_eff={summary['effective_score_final']:.4f} | "
+        f"PPL_ratio={summary.get('ppl_ratio', 'N/A')}"
+    )
+
+
+def mode_synthid(backbone, args):
+    """Run SynthID-Text (Dathathri et al., 2024) baseline evaluation."""
+    from eval.watermark import run_peccavi
+    cfg_file = getattr(args, "config_file", None)
+    cfg = load_config(cfg_file if cfg_file else os.path.join(args.config_dir, "synthid_baseline.yaml"))
+    wm_cfg = cfg.get("watermarking", {})
+    pl_cfg = cfg.get("policy_learning", {})
+    seed = getattr(args, "seed", 42)
+
+    logger.info("Running SynthID-Text baseline evaluation...")
+    summary = run_peccavi(
+        backbone,
+        generations=pl_cfg.get("generations", 5),
+        n_paraphrases=cfg.get("agents", {}).get("scriba_n_variants", 10),
+        n_eval_samples=pl_cfg.get("n_eval_samples", 100),
+        verbose=True,
+        theta_init=wm_cfg.get("theta_init", 2.0),
+        watermark_mode="synthid",
+        synthid_tournament_k=wm_cfg.get("tournament_k", 8),
+        seed=seed,
+    )
+
+    output_path = getattr(args, "output", "./results/synthid_baseline.json")
+    os.makedirs(os.path.dirname(output_path), exist_ok=True)
+    with open(output_path, "w") as f:
+        report = {"synthid_baseline": _sanitize({k: v for k, v in summary.items() if k != "detailed_records"})}
+        json.dump(report, f, indent=2)
+
+    logger.info(
+        f"SynthID done. AUC-ROC={summary['auc_roc']:.4f} | "
         f"FPR={summary['false_positive_rate']:.4f} | "
         f"S_eff={summary['effective_score_final']:.4f} | "
         f"PPL_ratio={summary.get('ppl_ratio', 'N/A')}"
@@ -283,13 +358,15 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p.add_argument(
         "--mode", required=True,
-        choices=["eval", "train", "kgw", "sir", "infer"],
+        choices=["eval", "train", "kgw", "sir", "dipmark", "synthid", "infer"],
         help=(
-            "eval  - run full PECCAVI benchmarks\n"
-            "train - run policy learning over simulated generations\n"
-            "kgw   - run KGW baseline evaluation\n"
-            "sir   - run SIR (entropy-aware) baseline evaluation\n"
-            "infer - single-prompt watermarking demo"
+            "eval    - run full PECCAVI benchmarks\n"
+            "train   - run policy learning over simulated generations\n"
+            "kgw     - run KGW baseline evaluation\n"
+            "sir     - run SIR (entropy-aware) baseline evaluation\n"
+            "dipmark - run DiPMark (Zhao et al., 2024) baseline evaluation\n"
+            "synthid - run SynthID-Text (Dathathri et al., 2024) baseline evaluation\n"
+            "infer   - single-prompt watermarking demo"
         ),
     )
     p.add_argument("--prompt", type=str,
@@ -320,6 +397,8 @@ def main():
         config_map = {
             "kgw": "kgw_baseline.yaml",
             "sir": "sir_baseline.yaml",
+            "dipmark": "dipmark_baseline.yaml",
+            "synthid": "synthid_baseline.yaml",
         }
         config_filename = config_map.get(args.mode, "peccavi.yaml")
         backbone = init_backbone(
@@ -334,6 +413,10 @@ def main():
         mode_kgw(backbone, args)
     elif args.mode == "sir":
         mode_sir(backbone, args)
+    elif args.mode == "dipmark":
+        mode_dipmark(backbone, args)
+    elif args.mode == "synthid":
+        mode_synthid(backbone, args)
     elif args.mode == "infer":
         mode_infer(backbone, args)
     else:
