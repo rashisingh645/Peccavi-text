@@ -154,10 +154,10 @@ def main():
     for ext in ("png", "pdf"):
         path = f"results/pareto_curve.{ext}"
         fig.savefig(path, dpi=150, bbox_inches="tight")
-        print(f"  Saved → {path}")
+        print(f"  Saved: {path}")
 
     plt.close(fig)
-    print("\n  Include results/pareto_curve.pdf as Figure 1 in the paper.")
+    print("\n  Include results/pareto_curve.pdf as Figure 1 in the paper."  )
 
 
 if __name__ == "__main__":
