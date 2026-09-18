@@ -8,7 +8,7 @@ from pathlib import Path
 import json
 import yaml
 
-CONFIG_PATH = Path("configs") / "peccavi.yaml"
+CONFIG_PATH = Path("configs") / "experiments.yaml"
 BASELINE_RESULTS_PATH = Path("results") / "benchmark_results.json"
 
 

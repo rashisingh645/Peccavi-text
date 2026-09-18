@@ -1,0 +1,395 @@
+# configs/experiments.yaml
+
+_anchors:
+  model_llama: &model_llama
+    backbone: "meta-llama/Llama-2-7b-chat-hf"
+    backend: "transformers"
+    api_key: null
+    load_in_4bit: true
+    device: "auto"
+
+  # Small cached backbone for RAM-constrained smoke-tests (CPU-only machines that can't
+  # fit the 7B model without disk offloading). Not for paper results.
+  model_tinyllama: &model_tinyllama
+    backbone: "TinyLlama/TinyLlama-1.1B-Chat-v1.0"
+    backend: "transformers"
+    api_key: null
+    load_in_4bit: false
+    device: "auto"
+
+  success_default: &success_default
+    watermark_retention_pct: 51
+    detection_auc_roc: 0.90
+    human_readability_min: 3.0
+
+  peccavi_watermarking_base: &peccavi_watermarking_base
+    theta_init: 2.0
+    theta_min: 0.5
+    # Must match Auctor's generation-time hard cap (peccavi/constants.py THETA_MAX) —
+    # theta could previously learn up to 8.0 while generation silently froze at 5.0.
+    theta_max: 5.0
+    tournament_k: 16
+    secret_key: "PECCAVI-SECRET"
+    watermark_mode: "peccavi"
+    adaptive_theta: true
+
+baseline_models:
+  - name: "LLaMa-2"
+    backbone: "meta-llama/Llama-2-7b-chat-hf"
+    backend: "transformers"
+
+  - name: "DeepSeek"
+    backbone: "deepseek-chat"
+    backend: "openai"
+    api_key: null          # reads from DEEPSEEK_API_KEY env var — NOT runnable, see note above
+
+  - name: "GPT-4"
+    backbone: "gpt-4o"
+    backend: "openai"
+    api_key: null          # reads from OPENAI_API_KEY env var — NOT runnable, see note above
+
+  - name: "Claude-3"
+    backbone: "claude-sonnet-4-5"
+    backend: "anthropic"
+    api_key: null          # reads from ANTHROPIC_API_KEY env var — NOT runnable, see note above
+
+profiles:
+  peccavi:
+    # Main PECCAVI run. python main.py --mode train --config-file configs/experiments.yaml --profile peccavi
+    model: *model_llama
+    watermarking:
+      <<: *peccavi_watermarking_base
+    agents:
+      scriba_n_variants: 10
+      praeco_prompt_pool: "default"
+    policy_learning:
+      alpha: 0.05
+      gamma: 0.99
+      lambda_wm: 0.6
+      nu_quality: 0.4
+      generations: 150
+      n_eval_samples: 500
+    success_criteria: *success_default
+
+  peccavi_attack_aware:
+    model: *model_llama
+    watermarking:
+      <<: *peccavi_watermarking_base
+    agents:
+      scriba_n_variants: 5
+    policy_learning:
+      alpha: 0.05
+      gamma: 0.99
+      lambda_wm: 0.5
+      nu_quality: 0.3
+      mu_ppl: 0.0
+      rho_survival: 0.2
+      generations: 50
+      n_eval_samples: 200
+
+  peccavi_high_nu:
+    # Quality-prioritised: nu=0.6, lambda=0.4. Compare against `peccavi` to show the
+    # quality-detection tradeoff is controllable via nu.
+    model: *model_llama
+    watermarking:
+      <<: *peccavi_watermarking_base
+    agents:
+      scriba_n_variants: 5
+    policy_learning:
+      alpha: 0.05
+      gamma: 0.99
+      lambda_wm: 0.4
+      nu_quality: 0.6
+      generations: 50
+      n_eval_samples: 200
+
+  eval_only_peccavi:
+    # Eval-only using a trained theta (from seed 7). generations=0 skips training —
+    # straight to eval + attack survival, for the paper's survival-vs-threshold curve.
+    model: *model_llama
+    watermarking:
+      <<: *peccavi_watermarking_base
+      theta_init: 5.5946
+    agents:
+      scriba_n_variants: 5
+    policy_learning:
+      alpha: 0.0
+      gamma: 0.99
+      lambda_wm: 0.6
+      nu_quality: 0.4
+      generations: 0
+      n_eval_samples: 200
+
+  debug_fast:
+    # Fast smoke-test — ~5-10 min on GPU, ~30 min on CPU. Use before full runs.
+    model: *model_llama
+    watermarking:
+      <<: *peccavi_watermarking_base
+    agents:
+      scriba_n_variants: 3
+    policy_learning:
+      alpha: 0.05
+      gamma: 0.99
+      lambda_wm: 0.6
+      nu_quality: 0.4
+      mu_ppl: 0.1
+      generations: 10
+      n_eval_samples: 30
+
+  test_quick:
+    # Smoke-test: 2 training gens + 10 eval samples, ~5 min. Exercises the full pipeline
+    # including the MarianMT attack-aware path. Not for paper results.
+    model: *model_llama
+    watermarking:
+      <<: *peccavi_watermarking_base
+      adaptive_theta: false
+    agents:
+      scriba_n_variants: 2
+    policy_learning:
+      alpha: 0.05
+      gamma: 0.99
+      lambda_wm: 0.5
+      nu_quality: 0.3
+      mu_ppl: 0.0
+      rho_survival: 0.2      # keep enabled so the MarianMT path is tested
+      generations: 2
+      n_eval_samples: 10
+
+  test_quick_tiny:
+    # Same as test_quick but on TinyLlama-1.1B — for machines without enough RAM/GPU
+    # for the 7B backbone. Pipeline/methodology smoke-test only, not for paper results.
+    # rho_survival=0 (unlike test_quick): the back-translation attack-survival term does
+    # CPU beam-search MarianMT generation on every training step, which dominated runtime
+    # on this machine (~40+ min for 2 generations) — disabled here purely for speed.
+    model: *model_tinyllama
+    watermarking:
+      <<: *peccavi_watermarking_base
+      adaptive_theta: false
+    agents:
+      scriba_n_variants: 2
+    policy_learning:
+      alpha: 0.05
+      gamma: 0.99
+      lambda_wm: 0.5
+      nu_quality: 0.3
+      mu_ppl: 0.0
+      rho_survival: 0.0
+      generations: 2
+      n_eval_samples: 10
+
+  # PECCAVI-DF (distortion-free)
+
+
+  peccavi_distortion_free:
+    # PECCAVI-DF: DiPmark's provably distribution-preserving alpha-reweight instead of
+    # the exponential-tilt tournament sampler. See PIPELINE.md §3.5. Same adaptive-policy
+    # and attack-aware training machinery as standard PECCAVI, applied to alpha not theta.
+    model: *model_llama
+    watermarking:
+      watermark_mode: "peccavi_df"
+      alpha_init: 0.3       # must stay in (0, 0.5]
+      alpha_min: 0.05
+      alpha_max: 0.49
+      window: 5             # context window for the permutation seed, matches dipmark_baseline
+      adaptive_theta: true
+    agents:
+      scriba_n_variants: 10
+      praeco_prompt_pool: "default"
+    policy_learning:
+      alpha: 0.05            # REINFORCE learning rate — unrelated to the DiPmark alpha above
+      gamma: 0.99
+      lambda_wm: 0.6
+      nu_quality: 0.4
+      mu_ppl: 0.0
+      rho_survival: 0.2
+      generations: 150
+      n_eval_samples: 500
+    success_criteria:
+      <<: *success_default
+      ppl_ratio_target: 1.10  # distortion-free means this should land far closer to 1.0 than standard PECCAVI's 1.4-2.6
+
+  peccavi_df_debug:
+    # Smoke-test for peccavi_df before the full 150-gen run — this is the newest, least
+    # battle-tested code path (unit-verified with mocks, never run against the real model).
+    model: *model_llama
+    watermarking:
+      watermark_mode: "peccavi_df"
+      alpha_init: 0.3
+      alpha_min: 0.05
+      alpha_max: 0.49
+      window: 5
+      adaptive_theta: true
+    agents:
+      scriba_n_variants: 3
+    policy_learning:
+      alpha: 0.05
+      gamma: 0.99
+      lambda_wm: 0.6
+      nu_quality: 0.4
+      mu_ppl: 0.0
+      rho_survival: 0.0     # off for the smoke test — turn on once the basic path is confirmed working
+      generations: 10
+      n_eval_samples: 30
+
+  # Ablations
+  ablation_fixed_theta:
+    # alpha=0 disables REINFORCE updates. Tests whether learning helps vs a static theta.
+    model: *model_llama
+    watermarking:
+      <<: *peccavi_watermarking_base
+      adaptive_theta: false
+    agents:
+      scriba_n_variants: 10
+    policy_learning:
+      alpha: 0.0
+      gamma: 0.99
+      lambda_wm: 0.6
+      nu_quality: 0.4
+      generations: 50
+      n_eval_samples: 500
+    success_criteria: *success_default
+
+  ablation_no_quality:
+    # nu=0, lambda=1.0. Tests whether the quality-aware reward term helps vs pure
+    # watermark-signal optimisation.
+    model: *model_llama
+    watermarking:
+      <<: *peccavi_watermarking_base
+      adaptive_theta: false
+    agents:
+      scriba_n_variants: 10
+    policy_learning:
+      alpha: 0.05
+      gamma: 0.99
+      lambda_wm: 1.0
+      nu_quality: 0.0
+      generations: 50
+      n_eval_samples: 500
+    success_criteria: *success_default
+
+  ablation_no_watermark:
+    # No watermark at all — measures AUC-ROC of the random baseline. Expected ~0.50
+    # (chance); confirms the detector isn't cheating some other way.
+    model: *model_llama
+    watermarking:
+      watermark_mode: "none"
+      secret_key: "PECCAVI-SECRET"
+    agents:
+      scriba_n_variants: 10
+    policy_learning:
+      generations: 50
+      n_eval_samples: 500
+    success_criteria: *success_default
+
+  # Baselines: KGW, SIR, DiPmark, SynthID-Text
+
+  kgw_baseline:
+    model: *model_llama
+    watermarking:
+      delta: 2.0
+      gamma: 0.5
+      secret_key: "PECCAVI-SECRET"
+      watermark_mode: "kgw"
+    agents:
+      scriba_n_variants: 10
+    policy_learning:
+      generations: 5
+      n_eval_samples: 500
+    success_criteria: *success_default
+
+  kgw_strong:
+    # delta=5.0 — matches THETA_MAX (peccavi/constants.py), the ceiling PECCAVI's theta
+    # can actually reach (Auctor hard-caps generation there regardless of theta_final).
+    # Isolates whether PECCAVI's advantage comes from the learned policy or just a high
+    # delta at matched strength. Was 8.0 before THETA_MAX was corrected from 8.0 to 5.0
+    # to match Auctor's pre-existing generation-time cap — that mismatch meant PECCAVI
+    # could report a theta_final up to 8.0 while never actually generating at that
+    # strength, so this baseline was previously testing an unreachable operating point.
+    model: *model_llama
+    watermarking:
+      delta: 5.0
+      gamma: 0.5
+      secret_key: "PECCAVI-SECRET"
+      watermark_mode: "kgw"
+    agents:
+      scriba_n_variants: 10
+    policy_learning:
+      generations: 5
+      n_eval_samples: 500
+    success_criteria: *success_default
+
+  eval_only_kgw:
+    model: *model_llama
+    watermarking:
+      delta: 2.0
+      gamma: 0.5
+      secret_key: "PECCAVI-SECRET"
+    policy_learning:
+      generations: 0
+      n_eval_samples: 200
+
+  sir_baseline:
+    # SIR (Liu, Pan, Hu, Meng, Wen, ICLR 2024). Bias is derived from a semantic embedding
+    # of the preceding context (Compositional-BERT -> trained transform network), not a
+    # context-token hash or entropy gate. First run trains and caches the transform
+    # network on datasets/arxiv_5000.csv (one-time cost, then reused from checkpoint_path).
+    model: *model_llama
+    watermarking:
+      delta: 2.0
+      secret_key: "PECCAVI-SECRET"
+      watermark_mode: "sir"
+      embedding_model: "perceptiveshawty/compositional-bert-large-uncased"
+      checkpoint_path: "results/sir_transform_model.pt"
+      proj_dim: 1000
+    agents:
+      scriba_n_variants: 10
+    policy_learning:
+      generations: 20
+      n_eval_samples: 500
+    success_criteria: *success_default
+
+  eval_only_sir:
+    # Eval-only — no training, just eval + attack survival curve.
+    model: *model_llama
+    watermarking:
+      delta: 2.0
+      embedding_model: "perceptiveshawty/compositional-bert-large-uncased"
+      checkpoint_path: "results/sir_transform_model.pt"
+      proj_dim: 1000
+    policy_learning:
+      generations: 0
+      n_eval_samples: 200
+
+  dipmark_baseline:
+    # DiPmark (Wu, Hu, Guo, Zhang, Huang, ICML 2024). Distribution-preserving
+    # alpha-reweight (gamma below is used as alpha); `delta` is unused.
+    model: *model_llama
+    watermarking:
+      delta: 2.0
+      gamma: 0.5
+      window: 5
+      secret_key: "PECCAVI-SECRET"
+      watermark_mode: "dipmark"
+    agents:
+      scriba_n_variants: 10
+    policy_learning:
+      generations: 5
+      n_eval_samples: 500
+    success_criteria: *success_default
+
+  synthid_baseline:
+    # SynthID-Text (Dathathri et al., Nature 2024). Genuine tournament sampling
+    # (binary elimination over 2^m i.i.d. samples, m=log2(tournament_k) layers).
+    # `theta_init` is unused; SynthID-Text has no theta parameter.
+    model: *model_llama
+    watermarking:
+      theta_init: 2.0
+      tournament_k: 16
+      secret_key: "PECCAVI-SECRET"
+      watermark_mode: "synthid"
+    agents:
+      scriba_n_variants: 10
+    policy_learning:
+      generations: 5
+      n_eval_samples: 500
+    success_criteria: *success_default

@@ -31,9 +31,10 @@ def _get_client():
 
 
 def flesch_quality_score(text: str) -> float:
-    """Maps Flesch Reading Ease (0–100) to a 1–5 scale."""
+    """Maps Flesch Reading Ease to a 1-5 scale, clamped since FRE can fall
+    outside its nominal 0-100 range (very hard or very easy text)."""
     fre = textstat.flesch_reading_ease(text)
-    return round(1 + (fre / 100) * 4, 2)
+    return round(min(max(1 + (fre / 100) * 4, 1.0), 5.0), 2)
 
 
 def gpt4_quality_score(text: str, prompt: str = None) -> float:

@@ -2,8 +2,16 @@
 peccavi/auctor.py
 Agent: Auctor - Watermarked Token Generation via Tournament Sampling.
 Implements the modified distribution:
-    p_w(x_t | x_<t, θ) ∝ p_LM(x_t | x_<t) * exp(θ * g(x_t, r_t))
-where g(x_t, r_t) is computed via tournament sampling over candidate tokens.
+    p_w(x_t | x_<t, θ) ∝ p_LM(x_t | x_<t) * exp(2θ * g(x_t, r_t))
+where g(x_t, r_t) ∈ [0,1] is computed via tournament sampling over candidate tokens.
+
+The generation-time logit boost is θ*(2g-1) rather than θ*g (see
+_tournament_sample below) so the bias is symmetric around 0 for a "coin-flip"
+green score. Since softmax is shift-invariant, exp(θ*(2g-1)) = exp(-θ)*exp(2θ*g)
+and the constant exp(-θ) factor cancels in the normalisation — so the actual
+effective tilt strength on g is 2θ, not θ. All calibration elsewhere in this
+codebase (THETA_MAX, the learned θ range, theory.py's empirical mu(θ)≈0.05θ fit)
+is against this real 2θ*(2-symmetric) formula, not the naive exp(θ*g) form.
 
 Inline approach: tournament sampling applied at every generation step,
 not post-hoc, so the autoregressive coherence chain is preserved.
@@ -13,9 +21,9 @@ from __future__ import annotations
 import torch
 import hashlib
 import numpy as np
-from backbone.model import LLaMABackbone
+from backbone.model import LLaMABackbone, require_local_tokenizer
 from typing import List, Tuple
-from peccavi.constants import SECRET_KEY
+from peccavi.constants import SECRET_KEY, THETA_MAX
 
 
 def _watermark_score(token_id: int, random_seed: int) -> float:
@@ -41,7 +49,7 @@ class Auctor:
     """
 
     def __init__(self, backbone: LLaMABackbone, theta: float = 2.0,
-                 tournament_k: int = 8, secret_key: str = SECRET_KEY):
+                 tournament_k: int = 16, secret_key: str = SECRET_KEY):
         self.backbone = backbone
         self.theta = theta
         self.tournament_k = tournament_k
@@ -89,11 +97,11 @@ class Auctor:
         for i, tid in enumerate(candidate_list):
             base_logit = top_k_logits[i].item()
             g_score = _watermark_score(tid, r_t)
-            effective_theta = min(self.theta, 5.0)
+            effective_theta = min(self.theta, THETA_MAX)
             watermark_boost = effective_theta * (2.0 * g_score - 1.0)  # Scale [-1, 1]
             biased_logit = base_logit + watermark_boost
             biased_scores.append((tid, biased_logit, g_score))
-        
+
         # Sample from re-weighted distribution
         logits_array = torch.tensor([s[1] for s in biased_scores], dtype=torch.float32, device=logits.device)
         logits_array = torch.nan_to_num(logits_array, nan=0.0, posinf=1e4, neginf=-1e4)
@@ -112,12 +120,11 @@ class Auctor:
         """
         Inline watermarked generation: tournament sampling applied at every
         token step so each token is chosen under the watermarked distribution
-        p_w(x_t | x_<t) ∝ p_LM * exp(θ·g(x_t, r_t)).
+        p_w(x_t | x_<t) ∝ p_LM * exp(2θ·g(x_t, r_t)) (see module docstring for
+        why the effective exponent is 2θ, not θ).
         This preserves autoregressive coherence — no post-hoc refinement.
         """
-        if not hasattr(self.backbone, "tokenizer"):
-            raw = self.backbone.generate(prompt, max_new_tokens=max_tokens)
-            return raw["text"] if isinstance(raw, dict) else raw
+        require_local_tokenizer(self.backbone, "Auctor.generate")
 
         tokenizer = self.backbone.tokenizer
 

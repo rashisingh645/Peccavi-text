@@ -15,12 +15,13 @@ from peccavi.praeco import Praeco
 from peccavi.auctor import Auctor
 from peccavi.auctor_kgw import KGWAuctor
 from peccavi.auctor_sir import SIRAuctor
-from peccavi.auctor_dipmark import DiPMarkAuctor
+from peccavi.auctor_dipmark import DiPMarkAuctor, per_token_green_flags
 from peccavi.auctor_synthid import SynthIDAuctor
 from peccavi.scriba import Scriba
 from peccavi.custos import Custos
 from peccavi.magister import Magister
 from peccavi.featurizer import PromptFeaturizer
+from peccavi.constants import THETA_MIN, THETA_MAX, Z_DETECTION_THRESHOLD
 from eval.quality import quality_score, flesch_quality_score, perplexity
 from sklearn.metrics import roc_auc_score, roc_curve
 from typing import Dict, List
@@ -37,6 +38,12 @@ def _set_seed(seed: int):
         torch.cuda.manual_seed_all(seed)
 
 
+def _norm_z(z: float) -> float:
+    """Normalise a z-score to [0,1] assuming z typically falls in [-10,10] —
+    clamped since strongly-watermarked long texts can push z outside that range."""
+    return min(max((z + 10) / 20, 0.0), 1.0)
+
+
 def run_peccavi(
     backbone: LLaMABackbone,
     generations: int = 10,
@@ -44,16 +51,21 @@ def run_peccavi(
     n_eval_samples: int = 100,
     verbose: bool = True,
     theta_init: float = 2.0,
-    watermark_mode: str = "peccavi",   # "peccavi" | "kgw" | "sir" | "none"
+    watermark_mode: str = "peccavi",   # "peccavi" | "peccavi_df" | "kgw" | "sir" | "none"
+    df_alpha_init: float = 0.3,        # peccavi_df: starting DiPmark alpha (distinct from `alpha`, the REINFORCE learning rate below)
+    df_alpha_min: float = 0.05,
+    df_alpha_max: float = 0.49,
+    df_window: int = 5,
     kgw_delta: float = 2.0,
     kgw_gamma: float = 0.5,
     sir_delta: float = 2.0,
-    sir_gamma: float = 0.5,
-    sir_entropy_threshold: float = 1.0,
+    sir_embedding_model: str = "perceptiveshawty/compositional-bert-large-uncased",
+    sir_checkpoint_path: str = "results/sir_transform_model.pt",
+    sir_proj_dim: int = 1000,
     dipmark_delta: float = 2.0,
     dipmark_gamma: float = 0.5,
     dipmark_window: int = 5,
-    synthid_tournament_k: int = 8,
+    synthid_tournament_k: int = 16,
     lam: float = 0.6,
     nu: float = 0.4,
     mu_ppl: float = 0.0,
@@ -62,8 +74,8 @@ def run_peccavi(
     seed: int = 42,
     checkpoint_path: str = None,
     adaptive_theta: bool = False,
-    theta_min: float = 0.5,
-    theta_max: float = 8.0,
+    theta_min: float = THETA_MIN,
+    theta_max: float = THETA_MAX,
 ) -> Dict:
     _set_seed(seed)
 
@@ -76,8 +88,8 @@ def run_peccavi(
         magister = None
     elif watermark_mode == "sir":
         generator = SIRAuctor(
-            backbone, delta=sir_delta, gamma=sir_gamma,
-            entropy_threshold=sir_entropy_threshold,
+            backbone, delta=sir_delta, embedding_model=sir_embedding_model,
+            checkpoint_path=sir_checkpoint_path, proj_dim=sir_proj_dim,
         )
         magister = None
     elif watermark_mode == "dipmark":
@@ -88,6 +100,19 @@ def run_peccavi(
         generator = SynthIDAuctor(backbone, theta=theta_init,
                                   tournament_k=synthid_tournament_k)
         magister = None
+    elif watermark_mode == "peccavi_df":
+        # Distortion-free PECCAVI: DiPmark's provably distribution-preserving reweight
+        # (peccavi/auctor_dipmark.py) as the generator, with its strength parameter alpha
+        # made content-adaptive and REINFORCE-learned instead of fixed — Magister's `.theta`
+        # field holds alpha here (see Magister.update()'s docstring); the bounds passed as
+        # theta_min/theta_max are alpha's bounds, not theta's.
+        generator = DiPMarkAuctor(backbone, gamma=df_alpha_init, window=df_window)
+        magister = Magister(
+            backbone, theta_init=df_alpha_init, alpha=alpha, lam=lam, nu=nu,
+            mu_ppl=mu_ppl, rho_survival=rho_survival,
+            adaptive=adaptive_theta, theta_min=df_alpha_min, theta_max=df_alpha_max,
+            df_window=df_window,
+        )
     elif watermark_mode == "none":
         generator = None
         magister = None
@@ -99,38 +124,52 @@ def run_peccavi(
             adaptive=adaptive_theta, theta_min=theta_min, theta_max=theta_max,
         )
 
-    featurizer = PromptFeaturizer() if (adaptive_theta and watermark_mode == "peccavi") else None
+    featurizer = PromptFeaturizer(backbone) if (adaptive_theta and watermark_mode in ("peccavi", "peccavi_df")) else None
 
     history = []
     detailed_records: List[Dict] = []
-    theta_by_prompt: List[Dict] = []   # tracks (entropy, theta_context) for paper Figure 2
+    theta_by_prompt: List[Dict] = []   # tracks (entropy, theta_context) for paper Figure 2 — theta or alpha, depending on mode
 
     for gen in range(1, generations + 1):
         try:
             prompt = praeco.next_prompt()
+            green_flags = None  # only populated in peccavi_df mode, consumed by magister.update() below
 
-            if watermark_mode == "peccavi":
+            if watermark_mode in ("peccavi", "peccavi_df"):
                 features = featurizer.extract(prompt) if featurizer else None
                 context_theta = magister.compute_theta(features)
-                generator.theta = context_theta
+                if watermark_mode == "peccavi":
+                    generator.theta = context_theta
+                else:
+                    generator.alpha = context_theta
                 wm_text = generator.generate(prompt, max_tokens=100)
             elif watermark_mode in ("kgw", "sir", "dipmark", "synthid"):
                 wm_text = generator.generate(prompt, max_tokens=100)
             else:
                 wm_text = backbone.generate(prompt, max_new_tokens=100)["text"]
 
-            if watermark_mode in ("kgw", "sir", "dipmark"):
-                original_score = (generator.z_score(wm_text) + 10) / 20  # normalise z to [0,1] approx
+            _uses_generator_z = watermark_mode in ("kgw", "sir", "dipmark", "synthid", "peccavi_df")
+            if _uses_generator_z:
+                original_score = _norm_z(generator.z_score(wm_text))
             else:
                 original_score = custos.watermark_score(wm_text)
 
             paraphrases = scriba.paraphrase(wm_text)
-            s_eff = custos.effective_score(paraphrases)
-            z_eff = custos.effective_z_score(paraphrases)
+            if _uses_generator_z:
+                # Custos's SHA256 g-score measures a different notion of "green" than
+                # these generators' own partitions (context-seeded permutation, tournament
+                # g-values, etc.) — use each generator's own z_score (same one driving
+                # detection) so S_eff reflects what was actually optimised/embedded.
+                para_scores_norm = [_norm_z(generator.z_score(p)) for p in paraphrases]
+                s_eff = sum(para_scores_norm) / max(len(para_scores_norm), 1)
+            else:
+                s_eff = custos.effective_score(paraphrases)
+                z_eff = custos.effective_z_score(paraphrases)
 
-            z_threshold = 4.0
-            if watermark_mode in ("kgw", "sir", "dipmark"):
+            z_threshold = Z_DETECTION_THRESHOLD
+            if _uses_generator_z:
                 para_z = [generator.z_score(p) for p in paraphrases]
+                z_eff = sum(para_z) / max(len(para_z), 1)
             else:
                 para_z = [custos.z_score(p) for p in paraphrases]
             retention = sum(1 for z in para_z if z >= z_threshold) / max(len(para_z), 1)
@@ -138,11 +177,16 @@ def run_peccavi(
             q_score = quality_score(wm_text, prompt=prompt)
             readability = flesch_quality_score(wm_text)
 
-            _feats = features if watermark_mode == "peccavi" else None
-            new_theta = (
-                magister.update(wm_text, original_score, reference_text=prompt, prompt_features=_feats)
-                if magister else theta_init
-            )
+            _feats = features if watermark_mode in ("peccavi", "peccavi_df") else None
+            if magister and watermark_mode == "peccavi_df":
+                green_flags = per_token_green_flags(backbone, wm_text, generator.alpha,
+                                                     generator.window, generator.secret_key)
+                new_theta = magister.update(wm_text, s_eff, reference_text=prompt, prompt_features=_feats,
+                                             green_flags=green_flags, current_param=generator.alpha)
+            elif magister:
+                new_theta = magister.update(wm_text, s_eff, reference_text=prompt, prompt_features=_feats)
+            else:
+                new_theta = theta_init
         except Exception as _gen_exc:
             logger.warning(f"Gen {gen} failed and will be skipped: {_gen_exc}")
             continue
@@ -157,7 +201,7 @@ def run_peccavi(
         record = {
             "generation": gen,
             "theta": round(new_theta, 4),
-            "theta_context": round(context_theta if watermark_mode == "peccavi" else new_theta, 4),
+            "theta_context": round(context_theta if watermark_mode in ("peccavi", "peccavi_df") else new_theta, 4),
             "original_score": round(original_score, 4),
             "effective_score": round(s_eff, 4),
             "effective_z_score": round(z_eff, 4),
@@ -180,7 +224,7 @@ def run_peccavi(
                 "z_eff": round(z_eff, 4),
                 "retention_rate": round(retention, 4),
                 "theta": round(new_theta, 4),
-                "theta_context": round(context_theta if watermark_mode == "peccavi" else new_theta, 4),
+                "theta_context": round(context_theta if watermark_mode in ("peccavi", "peccavi_df") else new_theta, 4),
                 "readability": readability,
                 "gpt4_quality": q_score,
             },
@@ -192,15 +236,15 @@ def run_peccavi(
                 f"S_orig={original_score:.4f} | S_eff={s_eff:.4f}"
             )
 
-    # Save theta checkpoint immediately after training — before any eval that could crash
-    if checkpoint_path and watermark_mode == "peccavi" and magister is not None:
+    # Save theta/alpha checkpoint immediately after training — before any eval that could crash
+    if checkpoint_path and watermark_mode in ("peccavi", "peccavi_df") and magister is not None:
         os.makedirs(os.path.dirname(checkpoint_path), exist_ok=True)
         ckpt = {"theta": round(magister.theta, 6)}
         if adaptive_theta:
             ckpt["w"] = magister.w.tolist()
         with open(checkpoint_path, "w") as _ckpt:
             json.dump(ckpt, _ckpt)
-        logger.info(f"θ checkpoint saved → {checkpoint_path} (θ={magister.theta:.4f})")
+        logger.info(f"Checkpoint saved → {checkpoint_path} (value={magister.theta:.4f})")
 
     # AUC-ROC and False Positive Rate
     logger.info("Computing AUC-ROC and false positive rate")
@@ -217,14 +261,20 @@ def run_peccavi(
             for p in eval_prompts
         ]
     else:
-        # For PECCAVI with adaptive theta, set context-specific theta per eval prompt
+        # For PECCAVI with adaptive theta/alpha, set context-specific value per eval prompt.
+        # DiPMarkAuctor (peccavi_df) has no `.theta` attribute — setting one would silently
+        # do nothing, since its generate()/z_score() read `.alpha`.
         wm_texts_eval = []
         for p in eval_prompts:
             if featurizer is not None and magister is not None:
-                generator.theta = magister.compute_theta(featurizer.extract(p))
+                ctx_val = magister.compute_theta(featurizer.extract(p))
+                if watermark_mode == "peccavi_df":
+                    generator.alpha = ctx_val
+                else:
+                    generator.theta = ctx_val
             wm_texts_eval.append(generator.generate(p, max_tokens=100))
 
-    use_generator_z = watermark_mode in ("kgw", "sir", "dipmark")
+    use_generator_z = watermark_mode in ("kgw", "sir", "dipmark", "synthid", "peccavi_df")
     if use_generator_z:
         z_scores_all = (
             [generator.z_score(t) for t in baseline_texts]
@@ -242,7 +292,7 @@ def run_peccavi(
     fpr_curve, tpr_curve, _ = roc_curve(labels, z_scores_all)
     tpr_at_1fpr = float(np.interp(0.01, fpr_curve, tpr_curve))
 
-    z_threshold = 4.0
+    z_threshold = Z_DETECTION_THRESHOLD
     fp = sum(1 for z in baseline_z if z >= z_threshold)
     fpr = fp / len(baseline_texts)
 
@@ -262,20 +312,20 @@ def run_peccavi(
 
     # Per-attack survival at multiple detection thresholds — enables survival-vs-threshold curve.
     # Saving raw z-scores lets us recompute at any threshold without re-running.
+    # "semantic" was removed entirely — it was an unconditional duplicate of lm_paraphrase.
     logger.info("Computing per-attack survival rates...")
     THRESHOLDS = [1.5, 2.0, 2.5, 3.0, 3.5, 4.0]
-    attack_names = ["lexical", "syntactic", "semantic", "lm_paraphrase", "gpt4_paraphrase"]
+    attack_names = ["lexical", "syntactic", "lm_paraphrase"]
+    _attack_techniques = [
+        scriba.lexical_attack,
+        scriba.syntactic_attack,
+        lambda t: scriba.lm_paraphrase(t, "Rephrase the following:\n\n{text}"),
+    ]
+
     attack_survival: Dict[str, float] = {}
     attack_z_scores: Dict[str, List[float]] = {}
     attack_survival_by_threshold: Dict[str, Dict[str, float]] = {}
     sample_attack = min(30, n_eval_samples)
-    _attack_techniques = [
-        scriba.lexical_attack,
-        scriba.syntactic_attack,
-        scriba.semantic_attack,
-        lambda t: scriba.lm_paraphrase(t, "Rephrase the following:\n\n{text}"),
-        scriba.gpt4_paraphrase,
-    ]
     for attack_idx, attack_name in enumerate(attack_names):
         z_list = []
         for wm_text in wm_texts_eval[:sample_attack]:
@@ -297,8 +347,15 @@ def run_peccavi(
         wm_text = wm_texts_eval[i]
         paraphrases = scriba.paraphrase(wm_text) if i < EVAL_DETAIL_LIMIT else []
         wm_text = wm_texts_eval[i]
-        s_orig_i = custos.watermark_score(wm_text)
-        s_eff_i = custos.effective_score(paraphrases)
+        if use_generator_z:
+            s_orig_i = _norm_z(generator.z_score(wm_text))
+            s_eff_i = (
+                sum(_norm_z(generator.z_score(p)) for p in paraphrases) / len(paraphrases)
+                if paraphrases else 0.0
+            )
+        else:
+            s_orig_i = custos.watermark_score(wm_text)
+            s_eff_i = custos.effective_score(paraphrases)
         z_i = generator.z_score(wm_text) if use_generator_z else custos.z_score(wm_text)
         detailed_records.append({
             "phase": "eval",
@@ -353,7 +410,7 @@ def run_peccavi(
     summary = {
         "watermark_mode": watermark_mode,
         "seed": seed,
-        "theta_final": history[-1]["theta"] if history else theta_init,
+        "theta_final": history[-1]["theta"] if history else (df_alpha_init if watermark_mode == "peccavi_df" else theta_init),
         "effective_score_final": last_eff,
         "effective_score_improvement_pct": round(improvement, 2),
         "avg_retention_rate": avg_retention,
@@ -368,7 +425,6 @@ def run_peccavi(
         "attack_survival": attack_survival,
         "attack_z_scores": attack_z_scores,
         "attack_survival_by_threshold": attack_survival_by_threshold,
-        "gpt4_survival": attack_survival.get("gpt4_paraphrase"),
         "adaptive_theta": adaptive_theta,
         "w_final": magister.w.tolist() if (magister and adaptive_theta) else None,
         "w_feature_names": ["token_entropy", "length_norm", "vocab_diversity", "avg_token_len_norm"],

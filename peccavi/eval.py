@@ -75,14 +75,22 @@ def run_evaluation(prompt: str, theta: float):
     wm_text = AUCTOR.generate(prompt, max_tokens=200)
     detection = CUSTOS.detect(wm_text)
     wm_score = detection["score"]
-    threshold = detection["threshold"]
+    threshold = detection["z_threshold"]
     is_wm = detection["is_watermarked"]
 
     variants = SCRIBA.paraphrase(wm_text)
+    # variant_scores are raw mean-g scores in [0,1] (used for display below);
+    # detection must compare against z-scores, since `threshold` is a z-score (~4.0),
+    # not a raw score — comparing raw scores to a z-threshold would always be False.
     variant_scores = [CUSTOS.watermark_score(v) for v in variants]
-    n_detected = sum(1 for s in variant_scores if s > threshold)
-    robustness_pct = round(n_detected / len(variants) * 100, 1)
-    s_eff = round(min(variant_scores), 4) if variant_scores else 0.0
+    variant_z_scores = [CUSTOS.z_score(v) for v in variants]
+    n_detected = sum(1 for z in variant_z_scores if z >= threshold)
+    robustness_pct = round(n_detected / len(variants) * 100, 1) if variants else 0.0
+    # Use the shared Custos.effective_score() (mean across paraphrases) rather than a
+    # locally recomputed min() — a previous version of this file diverged from Custos's
+    # own definition of S_eff, so the Gradio app and the training/eval pipeline reported
+    # two different statistics under the same name.
+    s_eff = round(CUSTOS.effective_score(variants), 4) if variants else 0.0
     resilience_pct = round(s_eff * 100, 1)
 
     estimated_auc = round(min(0.985, 0.72 + max(0.0, wm_score - 0.50) * 2.1), 3)
@@ -108,10 +116,10 @@ def run_evaluation(prompt: str, theta: float):
     )
 
     paraphrase_lines = []
-    for i, (v, s) in enumerate(zip(variants, variant_scores), 1):
-        icon = "✅" if s > threshold else "❌"
+    for i, (v, s, z) in enumerate(zip(variants, variant_scores, variant_z_scores), 1):
+        icon = "✅" if z >= threshold else "❌"
         preview = v[:170] + ("..." if len(v) > 170 else "")
-        paraphrase_lines.append(f"Variant {i}  {icon}  Score: {s:.4f}\n{preview}")
+        paraphrase_lines.append(f"Variant {i}  {icon}  Score: {s:.4f} (z={z:.2f})\n{preview}")
     paraphrase_str = "\n\n".join(paraphrase_lines)
 
     table_str, bar_fig, radar_fig = _render_comparison_view(peccavi, get_baseline_metrics())

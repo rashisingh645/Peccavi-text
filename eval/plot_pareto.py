@@ -53,14 +53,13 @@ def main():
     }
     LABELS = {
         "kgw":     "KGW (Kirchenbauer et al., 2023)",
-        "sir":     "SIR (entropy-aware KGW)",
+        "sir":     "SIR (Liu et al., ICLR 2024)",
         "peccavi": "PECCAVI — learned θ (ours)",
     }
 
-    fig, axes = plt.subplots(1, 2, figsize=(13, 5))
+    fig, ax = plt.subplots(1, 1, figsize=(7, 5))
 
-    # ── Left panel: AUC-ROC vs PPL ratio ──────────────────────────────────────
-    ax = axes[0]
+    # AUC-ROC vs PPL ratio
     for method in ("kgw", "sir"):
         pts = [p for p in data.get(method, []) if _valid(p)]
         if not pts:
@@ -103,45 +102,6 @@ def main():
     ax.set_title("Quality–Detection Pareto Frontier", fontsize=12, fontweight="bold")
     ax.legend(loc="lower right", fontsize=8.5)
     ax.grid(True, alpha=0.3)
-
-    # ── Right panel: GPT-4 attack survival vs PPL ratio ───────────────────────
-    ax2 = axes[1]
-    has_gpt4 = False
-    for method in ("kgw", "sir"):
-        pts = [p for p in data.get(method, [])
-               if _valid(p) and p.get("gpt4_survival") is not None]
-        if not pts:
-            continue
-        pts = sorted(pts, key=lambda p: p["ppl_ratio"])
-        xs = [p["ppl_ratio"] for p in pts]
-        ys = [p["gpt4_survival"] for p in pts]
-        ax2.plot(xs, ys, "o-", color=COLORS[method], linewidth=2,
-                 markersize=7, label=LABELS[method], zorder=2)
-        has_gpt4 = True
-        for p in pts:
-            ax2.annotate(
-                f"δ={p['delta']:.1f}",
-                (p["ppl_ratio"], p["gpt4_survival"]),
-                textcoords="offset points", xytext=(5, 4),
-                fontsize=7.5, color=COLORS[method],
-            )
-
-    pec_g4 = [p for p in pec_pts if p.get("gpt4_survival") is not None]
-    if pec_g4:
-        px2, py2 = pec_g4[0]["ppl_ratio"], pec_g4[0]["gpt4_survival"]
-        ax2.scatter([px2], [py2], marker="*", s=350, color=COLORS["peccavi"],
-                    zorder=5, label=LABELS["peccavi"])
-        has_gpt4 = True
-
-    if has_gpt4:
-        ax2.set_xlabel("PPL Ratio (watermarked / baseline)  ←  lower is better", fontsize=10)
-        ax2.set_ylabel("Survival rate after GPT-4 paraphrase  →  higher is better", fontsize=10)
-        ax2.set_title("Robustness to Neural Paraphrasing (GPT-4)", fontsize=12, fontweight="bold")
-        ax2.legend(loc="lower right", fontsize=8.5)
-        ax2.grid(True, alpha=0.3)
-    else:
-        ax2.set_visible(False)
-        fig.set_size_inches(7, 5)
 
     fig.suptitle(
         "PECCAVI: Unified Adaptive Watermarking Framework\n"

@@ -10,9 +10,9 @@ import hashlib
 import math
 import torch
 import numpy as np
-from backbone.model import LLaMABackbone
+from backbone.model import LLaMABackbone, require_local_tokenizer
 from typing import List
-from peccavi.constants import SECRET_KEY
+from peccavi.constants import SECRET_KEY, Z_DETECTION_THRESHOLD
 
 
 def _kgw_seed(prev_token_id: int, secret_key: str = SECRET_KEY) -> int:
@@ -45,8 +45,7 @@ class KGWAuctor:
 
     def z_score(self, text: str) -> float:
         """KGW detection z-score: (count_green - n*gamma) / sqrt(n*gamma*(1-gamma))."""
-        if not hasattr(self.backbone, "tokenizer"):
-            return 0.0
+        require_local_tokenizer(self.backbone, "KGWAuctor.z_score")
         tokenizer = self.backbone.tokenizer
         token_ids = tokenizer.encode(text)
         n = len(token_ids)
@@ -64,7 +63,7 @@ class KGWAuctor:
 
         return (green_count - n * self.gamma) / math.sqrt(n * self.gamma * (1 - self.gamma))
 
-    def detect(self, text: str, z_threshold: float = 4.0) -> dict:
+    def detect(self, text: str, z_threshold: float = Z_DETECTION_THRESHOLD) -> dict:
         z = self.z_score(text)
         return {
             "z_score": round(z, 4),
@@ -73,9 +72,7 @@ class KGWAuctor:
         }
 
     def generate(self, prompt: str, max_tokens: int = 200) -> str:
-        if not hasattr(self.backbone, "tokenizer"):
-            raw = self.backbone.generate(prompt, max_new_tokens=max_tokens)
-            return raw["text"] if isinstance(raw, dict) else raw
+        require_local_tokenizer(self.backbone, "KGWAuctor.generate")
 
         tokenizer = self.backbone.tokenizer
         formatted_prompt = prompt

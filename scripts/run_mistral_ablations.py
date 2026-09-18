@@ -13,45 +13,47 @@ import subprocess
 import sys
 import os
 
+CONFIG_FILE = "configs/experiments_mistral.yaml"
+
 EXPERIMENTS = [
     {
         "name": "peccavi_mistral",
-        "config": "configs/mistral_peccavi.yaml",
+        "profile": "peccavi",
         "mode": "train",
         "output": "results/peccavi_mistral_s42.json",
         "seed": 42,
     },
     {
         "name": "kgw_mistral",
-        "config": "configs/mistral_kgw.yaml",
+        "profile": "kgw_baseline",
         "mode": "kgw",
         "output": "results/kgw_mistral_s42.json",
         "seed": 42,
     },
     {
         "name": "sir_mistral",
-        "config": "configs/mistral_sir.yaml",
+        "profile": "sir_baseline",
         "mode": "sir",
         "output": "results/sir_mistral_s42.json",
         "seed": 42,
     },
     {
         "name": "ablation_fixed_mistral",
-        "config": "configs/mistral_ablation_fixed.yaml",
+        "profile": "ablation_fixed_theta",
         "mode": "train",
         "output": "results/ablation_fixed_mistral_s42.json",
         "seed": 42,
     },
     {
         "name": "ablation_noq_mistral",
-        "config": "configs/mistral_ablation_no_quality.yaml",
+        "profile": "ablation_no_quality",
         "mode": "train",
         "output": "results/ablation_noq_mistral_s42.json",
         "seed": 42,
     },
     {
         "name": "ablation_nowm_mistral",
-        "config": "configs/mistral_ablation_no_watermark.yaml",
+        "profile": "ablation_no_watermark",
         "mode": "train",
         "output": "results/ablation_nowm_mistral_s42.json",
         "seed": 42,
@@ -68,12 +70,13 @@ def run_experiment(exp: dict, seed: int = None):
         sys.executable, "main.py",
         "--mode", exp["mode"],
         "--output", out,
-        "--config-file", exp["config"],
+        "--config-file", CONFIG_FILE,
+        "--profile", exp["profile"],
         "--seed", str(s),
     ]
     print(f"\n{'='*60}")
     print(f"  Running: {exp['name']} (seed={s})")
-    print(f"  Config:  {exp['config']}")
+    print(f"  Config:  {CONFIG_FILE} [profile={exp['profile']}]")
     print(f"  Output:  {out}")
     print(f"{'='*60}")
     result = subprocess.run(cmd, check=False)

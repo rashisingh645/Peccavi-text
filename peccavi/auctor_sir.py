@@ -1,74 +1,97 @@
 """
 peccavi/auctor_sir.py
-Baseline: Entropy-Aware Watermarking (SIR-style).
-Applies the KGW green-list delta ONLY at high-entropy token positions.
-Low-entropy positions (near-deterministic choices) are generated unwatermarked,
-preserving fluency where the model has little freedom.
+Baseline: SIR (Liu, Pan, Hu, Meng, Wen, ICLR 2024) —
+"A Semantic Invariant Robust Watermark for Large Language Models"
 
-Reference: Kirchenbauer et al. 2023 entropy-aware variant; also related to
-"A Semantic Invariant Robust Watermark for Large Language Models" (Liu et al. 2023).
+Real SIR has nothing to do with token entropy or a KGW-style hash-seeded green list
+(an earlier version of this file mislabeled an entropy-gated KGW variant as "SIR" —
+that was a different, unrelated technique). The actual mechanism, from `sir_model.py`:
 
-Comparison with PECCAVI:
-  SIR uses a fixed entropy threshold (hyperparameter).
-  PECCAVI learns the optimal watermark strength theta via REINFORCE, adapting
-  to content and jointly optimising detection power with text quality.
+  1. Embed the preceding text with Compositional-BERT -> e (1024-dim).
+  2. Pass e through a small trained network T -> a `proj_dim`-length watermark vector,
+     tanh-bounded to (-1, 1), then expanded to the full vocabulary via a fixed random
+     hash mapping (vocab_size -> proj_dim, feature-hashing trick).
+  3. Add `delta * P_W` to the LM logits and sample — a continuous, real-valued bias per
+     token rather than a binary green/red split.
+
+T is trained (see `sir_model.py`) so that semantically similar contexts produce
+correlated watermark vectors — this is what lets the signal survive paraphrasing that
+preserves meaning, unlike KGW/DiPmark/SynthID whose green/red assignment depends on
+exact token identity and breaks whenever the token sequence changes.
+
+Detection scores the mean watermark value received by the actual tokens and tests it
+against the null (mean 0, since T is trained to be zero-mean/balanced) with a one-sample
+z-test — the paper itself just thresholds the mean at an empirically calibrated FPR; the
+z-test here is this codebase's standard z_score()/detect() convention layered on top.
 """
 
 from __future__ import annotations
 import hashlib
 import math
+import statistics
 import torch
-import numpy as np
-from backbone.model import LLaMABackbone
+from backbone.model import LLaMABackbone, require_local_tokenizer
 from typing import List
-from peccavi.constants import SECRET_KEY
-from peccavi.auctor_kgw import _kgw_seed, _green_mask
-
-
-def _token_entropy(logits: torch.Tensor) -> float:
-    """Shannon entropy (nats) of the softmax distribution over logits."""
-    probs = torch.softmax(logits.float(), dim=-1)
-    log_probs = torch.log(probs + 1e-12)
-    return float(-torch.sum(probs * log_probs).item())
+from peccavi.constants import SECRET_KEY, Z_DETECTION_THRESHOLD
+from peccavi.sir_model import CBertEmbedder, DEFAULT_EMBEDDING_MODEL, load_or_train_transform_model, vocab_mapping
 
 
 class SIRAuctor:
     """
-    Entropy-aware watermarked generation.
-
-    At each step:
-      1. Compute H = entropy of p_LM(·|context).
-      2. If H > entropy_threshold: add delta to green token logits (watermark active).
-      3. If H <= entropy_threshold: sample normally (low-entropy = nearly forced token).
-
-    Detection:
-      Re-run the model to recover entropy at each position.
-      Z-test counts only high-entropy positions toward the green-token statistic,
-      matching the generation-time decision exactly.
+    SIR watermarked generation via a semantic-embedding-conditioned bias, not a
+    context-hash green list. `gamma`/`entropy_threshold` are accepted only for
+    call-site compatibility with older configs — real SIR has neither parameter.
     """
 
-    def __init__(
-        self,
-        backbone: LLaMABackbone,
-        delta: float = 2.0,
-        gamma: float = 0.5,
-        entropy_threshold: float = 1.0,   # nats; ~3 nat ≈ uniform over ~20 tokens
-        secret_key: str = SECRET_KEY,
-    ):
+    def __init__(self, backbone: LLaMABackbone, delta: float = 2.0,
+                 secret_key: str = SECRET_KEY,
+                 embedding_model: str = DEFAULT_EMBEDDING_MODEL,
+                 checkpoint_path: str = "results/sir_transform_model.pt",
+                 proj_dim: int = 1000,
+                 embed_device: str = "cpu",
+                 gamma: float = None, entropy_threshold: float = None):
         self.backbone = backbone
         self.delta = delta
-        self.gamma = gamma
-        self.entropy_threshold = entropy_threshold
         self.secret_key = secret_key
+        self.embed_device = embed_device
+        self.embedder = CBertEmbedder(embedding_model, device=embed_device)
+        self.checkpoint_path = checkpoint_path
+        self.proj_dim = proj_dim
+
+        self._transform_model = None
+        self._k2 = 1.0
+        self._mapping_t = None
+
+    def _ensure_model(self):
+        if self._transform_model is None:
+            self._transform_model, self._k2 = load_or_train_transform_model(
+                checkpoint_path=self.checkpoint_path,
+                device=self.embed_device,
+                proj_dim=self.proj_dim,
+            )
+
+    def _ensure_mapping(self, vocab_size: int):
+        if self._mapping_t is None:
+            seed = int(hashlib.sha256(self.secret_key.encode()).hexdigest()[:8], 16)
+            mapping = vocab_mapping(vocab_size, self.proj_dim, seed)
+            self._mapping_t = torch.as_tensor(mapping, dtype=torch.long)
+
+    def _watermark_vector(self, context_text: str, vocab_size: int) -> torch.Tensor:
+        """Returns a length-`vocab_size` tensor of per-token watermark bias in (-1, 1)."""
+        self._ensure_model()
+        self._ensure_mapping(vocab_size)
+        e = self.embedder.embed(context_text).to(self.embed_device)
+        with torch.no_grad():
+            raw = self._transform_model(e.unsqueeze(0)).squeeze(0)
+            compressed = torch.tanh(self._k2 * raw)
+        return compressed[self._mapping_t]
 
     # ------------------------------------------------------------------ #
     #  Generation                                                          #
     # ------------------------------------------------------------------ #
 
     def generate(self, prompt: str, max_tokens: int = 200) -> str:
-        if not hasattr(self.backbone, "tokenizer"):
-            raw = self.backbone.generate(prompt, max_new_tokens=max_tokens)
-            return raw["text"] if isinstance(raw, dict) else raw
+        require_local_tokenizer(self.backbone, "SIRAuctor.generate")
 
         tokenizer = self.backbone.tokenizer
         formatted_prompt = prompt
@@ -96,19 +119,13 @@ class SIRAuctor:
                 logits = outputs.logits[:, -1, :].squeeze(0)
 
             logits = torch.nan_to_num(logits, nan=0.0, posinf=1e4, neginf=-1e4)
-            H = _token_entropy(logits)
+            p_w = self._watermark_vector(context_text, vocab_size).to(logits.device)
+            biased_logits = logits + self.delta * p_w
 
-            if H > self.entropy_threshold:
-                prev = generated_ids[-1] if generated_ids else (prompt_ids[-1] if prompt_ids else 0)
-                seed = _kgw_seed(prev, self.secret_key)
-                mask = _green_mask(vocab_size, seed, self.gamma).to(logits.device)
-                logits = logits.clone()
-                logits[mask] += self.delta
-
-            probs = torch.softmax(logits, dim=0).clamp(min=0.0)
+            probs = torch.softmax(biased_logits, dim=0).clamp(min=0.0)
             prob_sum = probs.sum()
             if prob_sum <= 0 or not torch.isfinite(prob_sum):
-                new_token = int(torch.argmax(logits).item())
+                new_token = int(torch.argmax(biased_logits).item())
             else:
                 probs = probs / prob_sum
                 new_token = int(torch.multinomial(probs, 1).item())
@@ -123,64 +140,45 @@ class SIRAuctor:
     #  Detection                                                           #
     # ------------------------------------------------------------------ #
 
-    def z_score(self, text: str) -> float:
-        """
-        Entropy-aware z-test. Only counts tokens whose context entropy exceeds
-        the threshold used during generation — matching the generation decision.
-
-        z = (count_green_at_high_H - n_high_H * gamma) / sqrt(n_high_H * gamma * (1-gamma))
-        """
-        if not hasattr(self.backbone, "tokenizer"):
-            return 0.0
-
+    def _per_token_scores(self, text: str) -> List[float]:
+        require_local_tokenizer(self.backbone, "SIRAuctor scoring")
         tokenizer = self.backbone.tokenizer
         token_ids = tokenizer.encode(text)
-        n = len(token_ids)
-        if n == 0:
-            return 0.0
-
         vocab_size = tokenizer.vocab_size or len(tokenizer)
-        green_count = 0
-        n_high_entropy = 0
 
+        scores = []
         for i, tid in enumerate(token_ids):
-            # Reconstruct context up to position i
             context_ids = token_ids[:i]
-            if not context_ids:
-                context_text = ""
-            else:
-                context_text = tokenizer.decode(context_ids, skip_special_tokens=True)
+            context_text = tokenizer.decode(context_ids, skip_special_tokens=True) if context_ids else ""
+            p_w = self._watermark_vector(context_text, vocab_size)
+            scores.append(float(p_w[tid].item()))
+        return scores
 
-            inputs = tokenizer(
-                context_text, return_tensors="pt", truncation=True, max_length=2048
-            ).to(self.backbone.model.device)
+    def mean_score(self, text: str) -> float:
+        """S(x) = mean_t P_W(t) over generated tokens — the paper's raw detection statistic."""
+        scores = self._per_token_scores(text)
+        return statistics.mean(scores) if scores else 0.0
 
-            with torch.no_grad():
-                outputs = self.backbone.model(**inputs)
-                logits = outputs.logits[:, -1, :].squeeze(0)
-
-            logits = torch.nan_to_num(logits, nan=0.0, posinf=1e4, neginf=-1e4)
-            H = _token_entropy(logits)
-
-            if H > self.entropy_threshold:
-                n_high_entropy += 1
-                prev = token_ids[i - 1] if i > 0 else 0
-                seed = _kgw_seed(prev, self.secret_key)
-                mask = _green_mask(vocab_size, seed, self.gamma)
-                if tid < len(mask) and mask[tid]:
-                    green_count += 1
-
-        if n_high_entropy == 0:
+    def z_score(self, text: str) -> float:
+        """
+        One-sample z-test of the per-token watermark values against null mean 0
+        (T is trained to be zero-mean/balanced, so unwatermarked text should average ~0).
+        """
+        scores = self._per_token_scores(text)
+        n = len(scores)
+        if n < 2:
             return 0.0
+        mean_v = statistics.mean(scores)
+        std_v = statistics.pstdev(scores)
+        if std_v == 0:
+            return 0.0
+        return mean_v * math.sqrt(n) / std_v
 
-        expected = n_high_entropy * self.gamma
-        variance = n_high_entropy * self.gamma * (1 - self.gamma)
-        return (green_count - expected) / math.sqrt(variance)
-
-    def detect(self, text: str, z_threshold: float = 4.0) -> dict:
+    def detect(self, text: str, z_threshold: float = Z_DETECTION_THRESHOLD) -> dict:
         z = self.z_score(text)
         return {
             "z_score": round(z, 4),
+            "mean_score": round(self.mean_score(text), 4),
             "is_watermarked": z >= z_threshold,
             "z_threshold": z_threshold,
         }

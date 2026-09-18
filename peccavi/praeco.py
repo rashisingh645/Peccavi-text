@@ -6,7 +6,7 @@ Manages prompt construction each PECCAVI generation round.
 
 from __future__ import annotations
 from pathlib import Path
-from typing import List, Tuple
+from typing import Dict, List, Tuple
 import csv
 import random
 
@@ -25,19 +25,39 @@ PROMPT_BANK = [
 
 
 class Praeco:
+    """
+    Samples prompts stratified by source dataset: each call first picks a source
+    uniformly at random, then a prompt uniformly within that source. This gives every
+    dataset equal representation regardless of how many non-empty rows it happened to
+    contribute — e.g. c4_multilingual_5000.csv yields only ~833 usable prompts (most
+    rows have an empty `experiment` field) against ~5000 each from the other three
+    datasets, so sampling uniformly over the pooled list would draw from it roughly
+    6x less often than intended. Stratifying by source fixes that, and matters for the
+    content-adaptive claim specifically: Figure 2's entropy quartiles should reflect
+    all four content domains (Reddit/arctic, arxiv abstracts, multilingual web, literary
+    Gutenberg chunks), not be dominated by whichever dataset happened to have the most
+    non-empty rows.
+    """
+
     def __init__(self, custom_prompts: List[str] | None = None, dataset_dir: str | Path | None = None):
+        self.pools_by_source: Dict[str, List[str]] = {}
         if custom_prompts is not None:
             self.prompts = custom_prompts
             self.prompt_sources = {p: "custom" for p in custom_prompts}
+            self.pools_by_source["custom"] = list(custom_prompts)
         else:
             pairs = self.load_prompts_from_dataset(dataset_dir=dataset_dir)
             if pairs:
                 self.prompts = [p for p, _ in pairs]
                 self.prompt_sources = {p: src for p, src in pairs}
+                for p, src in pairs:
+                    self.pools_by_source.setdefault(src, []).append(p)
             else:
                 self.prompts = PROMPT_BANK
                 self.prompt_sources = {p: "builtin" for p in PROMPT_BANK}
-        self.prompt_scores = {prompt: 1.0 for prompt in self.prompts}
+                self.pools_by_source["builtin"] = list(PROMPT_BANK)
+
+        self.sources = sorted(self.pools_by_source.keys())
 
     @staticmethod
     def load_prompts_from_dataset(dataset_dir: str | Path | None = None) -> List[Tuple[str, str]]:
@@ -79,9 +99,27 @@ class Praeco:
         return self.prompt_sources.get(prompt, "unknown")
 
     def next_prompt(self) -> str:
-        weights = [max(self.prompt_scores.get(p, 0.1), 0.1) for p in self.prompts]
-        return random.choices(self.prompts, weights=weights, k=1)[0]
+        """Pick a source uniformly at random, then a prompt uniformly within it."""
+        source = random.choice(self.sources)
+        return random.choice(self.pools_by_source[source])
 
     def batch_prompts(self, n: int) -> List[str]:
-        weights = [max(self.prompt_scores.get(p, 0.1), 0.1) for p in self.prompts]
-        return random.choices(self.prompts, weights=weights, k=n)
+        """
+        Split n as evenly as possible across sources (deterministic balance, unlike
+        next_prompt()'s per-call random source pick — matters more here since eval
+        batches are meant to represent all content domains, not just converge to
+        balance in expectation over many calls), sampling with replacement within
+        each source.
+        """
+        if not self.sources:
+            return []
+        base, remainder = divmod(n, len(self.sources))
+        counts = [base + (1 if i < remainder else 0) for i in range(len(self.sources))]
+        random.shuffle(counts)  # avoid always giving the remainder to the same (sorted-first) source
+
+        batch: List[str] = []
+        for source, count in zip(self.sources, counts):
+            pool = self.pools_by_source[source]
+            batch.extend(random.choices(pool, k=count))
+        random.shuffle(batch)
+        return batch

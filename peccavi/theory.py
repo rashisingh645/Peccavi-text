@@ -19,10 +19,7 @@ Import the PROPOSITIONS dict to print LaTeX-ready statements:
 from __future__ import annotations
 import math
 
-# ---------------------------------------------------------------------------
 # Symbolic helpers — used in proof sketches (no heavy deps required)
-# ---------------------------------------------------------------------------
-
 def phi(x: float) -> float:
     """Standard normal CDF via approximation (no scipy needed)."""
     return 0.5 * (1.0 + math.erf(x / math.sqrt(2.0)))
@@ -51,9 +48,8 @@ def _inv_phi(p: float) -> float:
     return t - (c[0] + c[1]*t + c[2]*t**2) / (1 + d[0]*t + d[1]*t**2 + d[2]*t**3)
 
 
-# ---------------------------------------------------------------------------
+
 # Formal propositions (LaTeX strings + plain-English summaries)
-# ---------------------------------------------------------------------------
 
 PROPOSITIONS: dict[str, dict] = {
 
@@ -69,21 +65,27 @@ PROPOSITIONS: dict[str, dict] = {
         "latex": r"""
 \begin{proposition}[Detection Consistency]
 \label{prop:consistency}
-Let $x_{1:T}$ be a token sequence of length $T$ and let
-$z_T = \frac{\sum_{t=1}^{T} g(x_t, r_t) - T/2}{\sqrt{T/4}}$
-be the PECCAVI detection statistic, where $g(x_t, r_t) \in [0,1]$ is the
-hash-based green-list score and $r_t$ is the context seed derived from the
-secret key $K$ and the preceding context.
+Let $x_{1:T}$ be a token sequence of length $T$, let $g(x_t, r_t) \in [0,1]$ be
+the continuous hash-based green score ($r_t$ the context seed derived from the
+secret key $K$ and the preceding context), and let
+$I_t = \mathbb{1}[g(x_t, r_t) > \tfrac{1}{2}]$ be the binary green-token
+indicator that \texttt{Custos} actually thresholds on. The detection statistic is
+$z_T = \frac{\sum_{t=1}^{T} I_t - T/2}{\sqrt{T/4}}$.
 
 \textbf{(i) Type-I error control.}
-Under $H_0$ (text generated without watermarking), $g(x_t, r_t)$ are
-i.i.d.\ with $\mathbb{E}[g] = \tfrac{1}{2}$ and $\mathrm{Var}[g] = \tfrac{1}{4}$,
-so by the Central Limit Theorem $z_T \xrightarrow{d} \mathcal{N}(0,1)$.
-Hence $\Pr(z_T \geq z_\alpha \mid H_0) \to \alpha$ for any $z_\alpha = \Phi^{-1}(1-\alpha)$.
+Under $H_0$ (text generated without watermarking), $g(x_t, r_t)$ is
+independent of $x_t$ and hash-uniform on $[0,1]$, so $I_t$ are i.i.d.\
+$\mathrm{Bernoulli}(\tfrac12)$ with $\mathbb{E}[I_t] = \tfrac{1}{2}$ and
+$\mathrm{Var}[I_t] = \tfrac{1}{4}$ (this is where the $T/4$ comes from — it is
+the variance of the \emph{binary indicator}, not of the continuous score $g$
+itself, which would instead have $\mathrm{Var}[g] = \tfrac{1}{12}$ under
+$H_0$). By the Central Limit Theorem $z_T \xrightarrow{d} \mathcal{N}(0,1)$,
+so $\Pr(z_T \geq z_\alpha \mid H_0) \to \alpha$ for any $z_\alpha = \Phi^{-1}(1-\alpha)$.
 
 \textbf{(ii) Consistency under $H_1$.}
-Under $H_1$ (text generated with $\theta > 0$),
-$\mathbb{E}[g(x_t, r_t)] = \tfrac{1}{2} + \mu(\theta) > \tfrac{1}{2}$
+Under $H_1$ (text generated with $\theta > 0$), tournament sampling biases
+token selection toward high-$g$ candidates, so
+$\Pr(I_t = 1) = \tfrac{1}{2} + \mu(\theta) > \tfrac{1}{2}$
 for some $\mu(\theta) > 0$ increasing in $\theta$.
 Then $z_T / \sqrt{T} \xrightarrow{p} 2\mu(\theta) > 0$,
 so $\Pr(z_T \geq z_\alpha \mid H_1) \to 1$ as $T \to \infty$.
@@ -91,10 +93,12 @@ so $\Pr(z_T \geq z_\alpha \mid H_1) \to 1$ as $T \to \infty$.
 """,
         "proof_sketch": (
             "Under H0: g(x_t, r_t) is independent of x_t (secret key is unknown "
-            "to the generator), so g values are i.i.d. Uniform[0,1] in expectation. "
-            "CLT gives asymptotic normality. "
+            "to the generator), so g is hash-uniform on [0,1] and I_t = 1[g>0.5] "
+            "is i.i.d. Bernoulli(0.5) with Var[I_t] = 0.25 — this is the variance "
+            "the z_T denominator actually uses (the continuous score g itself has "
+            "Var[g] = 1/12, a different quantity). CLT gives asymptotic normality. "
             "Under H1: tournament sampling biases selection toward high-g tokens, "
-            "raising E[g] above 0.5 by an amount mu(theta) > 0. "
+            "raising P(I_t=1) above 0.5 by an amount mu(theta) > 0. "
             "LLN gives z_T/sqrt(T) -> 2*mu(theta) > 0, so z_T -> infinity."
         ),
     },
@@ -115,7 +119,8 @@ at significance level $\alpha$ satisfies
 \[
   \mathrm{TPR}(\alpha, T) \;\geq\; \Phi\!\left(\Phi^{-1}(\alpha) + \mu(\theta)\sqrt{T}\right),
 \]
-where $\mu(\theta) = \mathbb{E}[g(x_t,r_t)\mid H_1] - \tfrac{1}{2} > 0$
+where $\mu(\theta) = \Pr(I_t = 1 \mid H_1) - \tfrac{1}{2} > 0$, $I_t$ the
+green-token indicator of Proposition~\ref{prop:consistency},
 and $\Phi$ is the standard normal CDF.
 
 Consequently, for any target power $1-\beta$, the minimum text length required
@@ -135,37 +140,49 @@ for detection is $T^* = O\!\left((\Phi^{-1}(1-\beta) - \Phi^{-1}(\alpha))^2 / \m
         "title": "REINFORCE Convergence on Composite Reward",
         "summary": (
             "The PECCAVI REINFORCE update converges (in expectation) to a stationary "
-            "point of the composite reward J(theta) = lambda*S_orig + nu*quality. "
+            "point of the composite reward J(theta) = lambda*S_orig + nu*quality "
+            "(plus, when enabled, a PPL penalty and an attack-survival bonus). "
             "With bounded reward and learning rate alpha satisfying the Robbins-Monro "
             "conditions, theta_t converges almost surely."
         ),
         "latex": r"""
 \begin{proposition}[REINFORCE Convergence]
 \label{prop:reinforce}
-Define the composite reward $r(x, \theta) = \lambda \cdot S(x;\theta) + \nu \cdot Q(x)$,
-where $S(x;\theta) = \frac{1}{T}\sum_t g(x_t, r_t)$ is the watermark score,
-$Q(x) \in [1,5]$ is the text quality score, and $\lambda + \nu = 1$, $\lambda,\nu > 0$.
+Define the composite reward
+\[
+  r(x, \theta) = \lambda \cdot S(x;\theta) + \nu \cdot Q(x)
+  - \mu \cdot \max(0, \mathrm{PPL_{ratio}}(x) - 1) + \rho \cdot \mathrm{Survival}(x),
+\]
+where $S(x;\theta) = \frac{1}{T}\sum_t g(x_t, r_t) \in [0,1]$ is the watermark score,
+$Q(x) \in [1,5]$ is the text quality score, $\mathrm{Survival}(x) \in [0,1]$ is the
+post-attack detection-strength term, and $\lambda,\nu,\mu,\rho \geq 0$ are fixed
+weights ($\mu = \rho = 0$ by default, recovering the two-term reward
+$r = \lambda S + \nu Q$ with $\lambda+\nu=1$ used below).
 
 The PECCAVI policy gradient update
 \[
-  \theta_{k+1} = \theta_k + \alpha_k \sum_{t=1}^{T} g(x_t, r_t)\,
-  \bigl(r(x, \theta_k) - b\bigr),
-  \quad b = 0.5,
+  \theta_{k+1} = \theta_k + \alpha_k \sum_{t=1}^{T} \bigl(g(x_t, r_t) - \tfrac12\bigr)\,
+  \bigl(r(x, \theta_k) - b_k\bigr),
 \]
-is an unbiased stochastic gradient estimate of $J(\theta) = \mathbb{E}_x[r(x,\theta)]$
-with baseline $b$.
-Under the conditions $\sum_k \alpha_k = \infty$, $\sum_k \alpha_k^2 < \infty$,
-and $r$ bounded, $\theta_k$ converges almost surely to a stationary point
+with $b_k$ a running-mean baseline of recent rewards, is an unbiased stochastic
+gradient estimate of $J(\theta) = \mathbb{E}_x[r(x,\theta)]$.
+Provided $\mathrm{PPL_{ratio}}(x)$ is almost-surely bounded (so that $r$ remains
+bounded) and $\sum_k \alpha_k = \infty$, $\sum_k \alpha_k^2 < \infty$,
+$\theta_k$ converges almost surely to a stationary point
 $\theta^*$ satisfying $\nabla_\theta J(\theta^*) = 0$.
 \end{proposition}
 """,
         "proof_sketch": (
             "The update direction is E[grad log p_w(x|theta) * (r - b)] by the "
-            "REINFORCE identity (Williams 1992). With g(x_t, r_t) as the score "
-            "function (since log p_w includes theta * g), and b a constant baseline, "
-            "this is an unbiased gradient estimate. Convergence follows from "
-            "standard stochastic approximation theory (Robbins-Monro) given bounded "
-            "reward and diminishing step sizes."
+            "REINFORCE identity (Williams 1992), using (g(x_t,r_t) - 1/2) as the "
+            "centered score-function proxy (see Magister._policy_gradient) and a "
+            "running-mean baseline b_k in place of a fixed b=0.5. This is an unbiased "
+            "gradient estimate whenever b_k is uncorrelated with the current sample's "
+            "randomness. Convergence follows from standard stochastic approximation "
+            "theory (Robbins-Monro) given bounded reward and diminishing step sizes. "
+            "The mu*PPL and rho*Survival terms don't change this argument as long as "
+            "they stay bounded (Survival is bounded in [0,1] by construction; the PPL "
+            "penalty is bounded only if PPL_ratio itself is, which is assumed, not proven)."
         ),
     },
 

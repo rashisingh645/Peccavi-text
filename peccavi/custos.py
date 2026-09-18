@@ -11,12 +11,12 @@ Z-test detection:
 
 from __future__ import annotations
 from peccavi.auctor import _watermark_score, _context_seed
-from backbone.model import LLaMABackbone
+from backbone.model import LLaMABackbone, require_local_tokenizer
 from typing import List
 import statistics
 import hashlib
 import math
-from peccavi.constants import SECRET_KEY
+from peccavi.constants import SECRET_KEY, Z_DETECTION_THRESHOLD
 
 
 class Custos:
@@ -25,14 +25,21 @@ class Custos:
         self.secret_key = secret_key
 
     def _tokenize(self, text: str):
-        if hasattr(self.backbone, 'tokenizer'):
-            return self.backbone.tokenizer.encode(text)
-        return text.split()
+        require_local_tokenizer(self.backbone, "Custos scoring")
+        return self.backbone.tokenizer.encode(text)
 
     def watermark_score(self, text: str) -> float:
+        #this is the mean g score across all tokens
         """
         S(x_1:T) = (1/T) * Σ_t g(x_t, r_t)
         Scores all tokens — correct since Auctor watermarks inline at every generation step.
+        **INCONSISTENCY #3 — PIPELINE.md says min, code says mean:**
+- `PIPELINE.md` Section 4.5: `"S_eff = min_i S(paraphrase_i) — the worst-case score"`
+- `PIPELINE.md` Section 4.6: `"S_eff (post-paraphrase minimum score)"`
+- Actual code: `statistics.mean(...)` — the mean, not the minimum
+- The comment in `custos.py` explains: "min over many samples is dominated by variance and gives a pessimistic floor even when the signal survives"
+- A second inconsistency: `peccavi/eval.py` line 85 uses `min(variant_scores)` directly, while `custos.effective_score()` uses `mean`. Two different definitions coexist in the codebase.
+
         """
         token_ids = self._tokenize(text)
         if not token_ids:
@@ -99,7 +106,7 @@ class Custos:
             return 0.0
         return statistics.mean(self.z_score(p) for p in paraphrases)
 
-    def detect(self, text: str, z_threshold: float = 4.0) -> dict:
+    def detect(self, text: str, z_threshold: float = Z_DETECTION_THRESHOLD) -> dict:
         """
         Detect watermark using z-test. z >= z_threshold indicates watermarked text.
         z_threshold=4.0 corresponds to p < 0.00003 under H0 (no watermark).

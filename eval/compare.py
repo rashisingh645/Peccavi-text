@@ -19,7 +19,6 @@ METRICS = [
     ("false_positive_rate",   "FPR@z=4",          "{:.4f}", "≤0.05"),
     ("effective_score_final", "S_eff",             "{:.4f}", ">0.50"),
     ("ppl_ratio",             "PPL ratio",         "{:.4f}", "≤1.10"),
-    ("gpt4_survival",         "GPT-4 Survival",   "{:.4f}", "—"),
     ("theta_final",           "θ_final",           "{:.4f}", "—"),
     ("improvement_pct",       "Improvement %",     "{:.1f}",  "—"),
     ("avg_readability",       "Readability",       "{:.2f}",  "≥3.0"),

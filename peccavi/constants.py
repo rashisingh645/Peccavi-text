@@ -9,11 +9,14 @@ SECRET_KEY = "AIISC-SECRET"
 
 # Watermarking parameters
 DEFAULT_THETA = 2.0
-MIN_THETA = 0.1
-MAX_THETA = 10.0
-TOURNAMENT_K = 8
-DETECTION_THRESHOLD = 0.52
-
+THETA_MIN = 0.5   # matches the bounds actually used by Magister/run_peccavi
+# Must match Auctor._tournament_sample()'s generation-time cap (peccavi/auctor.py) —
+# REINFORCE previously could push theta_base up to 8.0 while Auctor silently capped
+# actual generation at 5.0, so a reported theta_final above 5.0 never corresponded to
+# any real change in the watermarked text. Both now share this one constant.
+THETA_MAX = 5.0
+TOURNAMENT_K = 16
+Z_DETECTION_THRESHOLD = 4.0   # z-score cutoff used by every detector's detect()/z_threshold default
 # Policy learning parameters
 ALPHA = 0.05  # REINFORCE learning rate
 GAMMA = 0.99  # Discount factor

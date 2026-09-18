@@ -1,0 +1,130 @@
+# configs/experiments_mistral.yaml
+_anchors:
+  model_mistral: &model_mistral
+    backbone: "mistralai/Mistral-7B-Instruct-v0.3"
+    backend: "transformers"
+    api_key: null
+    load_in_4bit: true
+    device: "auto"
+
+  success_default: &success_default
+    watermark_retention_pct: 51
+    detection_auc_roc: 0.90
+    human_readability_min: 3.0
+
+profiles:
+
+  peccavi:
+    model: *model_mistral
+    watermarking:
+      theta_init: 2.0
+      theta_min: 0.5
+      theta_max: 8.0
+      tournament_k: 16
+      secret_key: "PECCAVI-SECRET"
+      watermark_mode: "peccavi"
+      adaptive_theta: true
+    agents:
+      scriba_n_variants: 10
+    policy_learning:
+      alpha: 0.05
+      gamma: 0.99
+      lambda_wm: 0.6
+      nu_quality: 0.4
+      generations: 150
+      n_eval_samples: 500
+    success_criteria: *success_default
+
+  peccavi_fast:
+    # Reduced gens/eval for faster runtime (~2-3h on A10G) — generalisability check,
+    # not the main-table Mistral result.
+    model: *model_mistral
+    watermarking:
+      theta_init: 2.0
+      theta_min: 0.5
+      theta_max: 8.0
+      tournament_k: 16
+      secret_key: "PECCAVI-SECRET"
+      watermark_mode: "peccavi"
+      adaptive_theta: true
+    agents:
+      scriba_n_variants: 5
+    policy_learning:
+      alpha: 0.05
+      lambda_wm: 0.6
+      nu_quality: 0.4
+      generations: 50
+      n_eval_samples: 200
+    success_criteria: *success_default
+
+  ablation_fixed_theta:
+    model: *model_mistral
+    watermarking:
+      theta_init: 2.0
+      theta_min: 0.5
+      theta_max: 8.0
+      tournament_k: 16
+      secret_key: "PECCAVI-SECRET"
+      watermark_mode: "peccavi"
+      adaptive_theta: false
+    agents:
+      scriba_n_variants: 10
+    policy_learning:
+      alpha: 0.0
+      gamma: 0.99
+      lambda_wm: 0.6
+      nu_quality: 0.4
+      generations: 50
+      n_eval_samples: 500
+
+  ablation_no_quality:
+    model: *model_mistral
+    watermarking:
+      theta_init: 2.0
+      theta_min: 0.5
+      theta_max: 8.0
+      tournament_k: 16
+      secret_key: "PECCAVI-SECRET"
+      watermark_mode: "peccavi"
+      adaptive_theta: true
+    agents:
+      scriba_n_variants: 10
+    policy_learning:
+      alpha: 0.05
+      gamma: 0.99
+      lambda_wm: 1.0
+      nu_quality: 0.0
+      generations: 50
+      n_eval_samples: 500
+
+  ablation_no_watermark:
+    model: *model_mistral
+    watermarking:
+      watermark_mode: "none"
+      secret_key: "PECCAVI-SECRET"
+    agents:
+      scriba_n_variants: 10
+    policy_learning:
+      generations: 50
+      n_eval_samples: 500
+
+  kgw_baseline:
+    # KGW params otherwise match configs/experiments.yaml's kgw_baseline profile.
+    model: *model_mistral
+    watermarking:
+      delta: 2.0
+      gamma: 0.5
+    policy_learning:
+      generations: 20
+      n_eval_samples: 500
+
+  sir_baseline:
+    model: *model_mistral
+    watermarking:
+      delta: 2.0
+      embedding_model: "perceptiveshawty/compositional-bert-large-uncased"
+      checkpoint_path: "results/sir_transform_model.pt"
+      proj_dim: 1000
+    policy_learning:
+      generations: 20
+      n_eval_samples: 500

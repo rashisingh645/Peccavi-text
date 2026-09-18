@@ -24,6 +24,27 @@ try:
 except ImportError:
     raise ImportError("\n[PECCAVI] transformers not found.\nRun: pip install transformers accelerate\n")
 
+def require_local_tokenizer(backbone, feature_name: str) -> None:
+    """
+    Raise a clear error if `backbone` lacks local next-token logit access.
+
+    Token-level watermarking/detection (Auctor, KGW/SIR/DiPmark/SynthID, Custos) needs a
+    local tokenizer + model forward pass — only the `transformers` backend provides that.
+    API-only backends (openai/anthropic/deepseek) have neither: without this check, callers
+    silently fell back to plain unwatermarked generation or whitespace-split scoring, which
+    produces results that look like a real experiment but don't measure anything for that
+    backend. Fail loudly instead so a `--baselines` run reports a clear per-model error
+    (caught by eval/benchmarks.py's existing try/except) rather than a fake near-chance AUC.
+    """
+    if not hasattr(backbone, "tokenizer"):
+        raise RuntimeError(
+            f"{feature_name} requires local next-token logit access (backend='transformers'). "
+            f"backend='{getattr(backbone, 'backend', '?')}' has no local tokenizer/model — "
+            f"token-level watermarking/detection cannot run against it without a "
+            f"logprobs-based implementation, which does not exist for this backend."
+        )
+
+
 try:
     from transformers import BitsAndBytesConfig
     import bitsandbytes  # noqa: F401
@@ -153,7 +174,8 @@ class LLaMABackbone:
 
     @torch.no_grad()
     def token_distribution(self, context: str):
-        """Get the token distribution for the next token given the context."""
+        #this returns the softmax distribution over the next token given the context. This is used for tournament sampling.
+        """Get the token distribution for the next token given the context.this is what the tournament sampling is  based on."""
         if self.backend != "transformers":
             raise NotImplementedError(f"token_distribution not supported for backend: {self.backend}")
         

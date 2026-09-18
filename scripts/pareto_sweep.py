@@ -61,9 +61,10 @@ def sweep_method(backbone, watermark_mode: str, delta: float) -> dict:
         kwargs["kgw_delta"] = delta
         kwargs["kgw_gamma"] = 0.5
     elif watermark_mode == "sir":
+        # SIR's real strength parameter is delta (embedding-model + trained transform
+        # network, not the old entropy-gated-KGW `gamma`/`entropy_threshold`, which no
+        # longer exist as run_peccavi() parameters since the SIR correctness fix).
         kwargs["sir_delta"] = delta
-        kwargs["sir_gamma"] = 0.5
-        kwargs["sir_entropy_threshold"] = 1.0
 
     out = run_peccavi(backbone, **kwargs)
     return {
@@ -71,7 +72,6 @@ def sweep_method(backbone, watermark_mode: str, delta: float) -> dict:
         "auc_roc": _safe(out.get("auc_roc")),
         "ppl_ratio": _safe(out.get("ppl_ratio")),
         "tpr_at_1fpr": _safe(out.get("tpr_at_1fpr")),
-        "gpt4_survival": _safe(out.get("gpt4_survival")),
     }
 
 
@@ -88,16 +88,15 @@ def load_peccavi_point(path: str = "results/peccavi.json") -> list:
         "auc_roc": _safe(data.get("auc_roc")),
         "ppl_ratio": _safe(data.get("ppl_ratio")),
         "tpr_at_1fpr": _safe(data.get("tpr_at_1fpr")),
-        "gpt4_survival": _safe(data.get("gpt4_survival")),
     }]
 
 
 def main():
     os.makedirs("results", exist_ok=True)
 
-    from main import init_backbone
+    from main import init_backbone, load_profile
     logger.info("Initialising backbone for Pareto sweep...")
-    backbone = init_backbone("configs/peccavi.yaml")
+    backbone = init_backbone(load_profile("configs/experiments.yaml", "peccavi"))
 
     pareto_data = {"kgw": [], "sir": [], "peccavi": []}
 
@@ -109,8 +108,7 @@ def main():
                 pareto_data[method].append(pt)
                 logger.info(
                     f"  {method.upper()} δ={delta:.1f} → "
-                    f"AUC={pt['auc_roc']}, PPL={pt['ppl_ratio']}, "
-                    f"GPT-4 surv={pt['gpt4_survival']}"
+                    f"AUC={pt['auc_roc']}, PPL={pt['ppl_ratio']}"
                 )
             except Exception as e:
                 logger.warning(f"  {method.upper()} δ={delta:.1f} failed: {e}")
@@ -130,13 +128,11 @@ def main():
             label = f"δ={key_val:.2f}" if key_val is not None else "δ=?"
             auc = pt.get("auc_roc")
             ppl = pt.get("ppl_ratio")
-            g4  = pt.get("gpt4_survival")
             auc_s = f"{auc:.4f}" if auc is not None else "N/A"
             ppl_s = f"{ppl:.4f}" if ppl is not None else "N/A"
-            g4_s  = f"{g4:.4f}"  if g4  is not None else "N/A"
             print(
                 f"  {method.upper():<8} {label:<10} "
-                f"AUC={auc_s:<8} PPL={ppl_s:<8} GPT-4={g4_s}"
+                f"AUC={auc_s:<8} PPL={ppl_s}"
             )
 
     print(f"\n  Run  python eval/plot_pareto.py  to generate the figure.")

@@ -37,7 +37,8 @@ class _NumpyEncoder(json.JSONEncoder):
 
 THETA_CHECKPOINT = "./results/theta_checkpoint.json"
 DETAILED_OUTPUT = "./results/detailed_results.json"
-CONFIG_PATH = "configs/peccavi.yaml"
+CONFIG_PATH = "configs/experiments.yaml"
+CONFIG_PROFILE = "peccavi"
 
 
 def _load_theta(checkpoint_path: str = THETA_CHECKPOINT) -> float:
@@ -51,9 +52,12 @@ def _load_theta(checkpoint_path: str = THETA_CHECKPOINT) -> float:
 
 
 def _load_config() -> dict:
+    """Returns the "peccavi" profile's content from the consolidated config file
+    (policy_learning/agents), matching what used to be the top level of peccavi.yaml."""
     if os.path.exists(CONFIG_PATH):
-        with open(CONFIG_PATH) as f:
-            return yaml.safe_load(f)
+        with open(CONFIG_PATH, encoding="utf-8") as f:
+            data = yaml.safe_load(f)
+        return data.get("profiles", {}).get(CONFIG_PROFILE, {})
     return {}
 
 

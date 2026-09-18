@@ -3,7 +3,7 @@ eval/recompute_attack_survival.py
 Re-runs attack survival on saved watermarked texts from old result JSONs.
 
 All z-score computations are hash-based and need only the tokenizer (no GPU).
-Attacks use GPT-4o-mini (cheap, ~$0.001 per file) or local lexical fallback.
+Attacks are lexical substitution and MarianMT back-translation, both local.
 
 Usage:
     python eval/recompute_attack_survival.py results/peccavi_s7.json
@@ -13,21 +13,19 @@ Usage:
 from __future__ import annotations
 import json
 import math
-import os
 import random
 import re
 import sys
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Dict, List
+
+from peccavi.constants import SECRET_KEY, Z_DETECTION_THRESHOLD
+from peccavi.auctor import _watermark_score, _context_seed
 
 THRESHOLDS = [1.5, 2.0, 2.5, 3.0, 3.5, 4.0]
-SAMPLE_N = 30          # texts per attack type
-SECRET_KEY = "PECCAVI-SECRET"
-
-
-# ---------------------------------------------------------------------------
+SAMPLE_N = 30 
+# texts per attack type
 # Tokenizer-only backbone — sufficient for hash-based z-score computation
-# ---------------------------------------------------------------------------
 
 class _LightBackbone:
     def __init__(self, model_name: str):
@@ -50,23 +48,19 @@ def _detect_model(inner: dict) -> str:
         return "mistralai/Mistral-7B-Instruct-v0.3"
     return "meta-llama/Llama-2-7b-chat-hf"
 
-
-# ---------------------------------------------------------------------------
 # Lightweight z-scorers (tokenizer-only)
-# ---------------------------------------------------------------------------
 
 def _peccavi_z(text: str, tokenizer) -> float:
-    import hashlib
+    """Delegates to the exact same hash/window/secret-key logic Auctor/Custos use
+    for generation and detection, instead of a separately reimplemented formula."""
     token_ids = tokenizer.encode(text)
     n = len(token_ids)
     if n == 0:
         return 0.0
     green = 0
     for i, tid in enumerate(token_ids):
-        ctx = token_ids[:i]
-        seed_str = SECRET_KEY + ":" + ":".join(str(t) for t in ctx[-3:])
-        r = int(hashlib.sha256(seed_str.encode()).hexdigest()[:8], 16)
-        if (tid + r) % 2 == 0:
+        r_t = _context_seed(token_ids[:i], SECRET_KEY)
+        if _watermark_score(tid, r_t) > 0.5:
             green += 1
     return (green - n * 0.5) / math.sqrt(n * 0.25)
 
@@ -91,9 +85,48 @@ def _kgw_z(text: str, tokenizer, gamma: float = 0.5) -> float:
 
 
 def _sir_z(text: str, tokenizer, gamma: float = 0.5) -> float:
-    # SIR uses same green-list logic as KGW but only on high-entropy positions.
-    # We approximate with KGW z-score (same formula, slight overcount on z).
-    return _kgw_z(text, tokenizer, gamma)
+    raise NotImplementedError(
+        "SIR detection now needs a full backbone plus a trained semantic-embedding "
+        "network (peccavi/sir_model.py), not just a tokenizer — it can no longer be "
+        "approximated with a KGW-style hash formula (that approximation was only valid "
+        "when SIR meant entropy-gated KGW, which it no longer does). Recompute SIR "
+        "results by re-running peccavi/auctor_sir.py's SIRAuctor.z_score() directly, "
+        "not through this lightweight tokenizer-only script."
+    )
+
+
+def _dipmark_z(text: str, tokenizer, window: int = 5) -> float:
+    raise NotImplementedError(
+        "DiPmark detection re-derives the alpha-reweight at every token position, "
+        "which needs per-position LM forward passes on a full backbone, not just a "
+        "tokenizer — it cannot be approximated with a hash-only formula like "
+        "KGW/PECCAVI/SynthID. Recompute DiPmark results by re-running "
+        "peccavi/auctor_dipmark.py's DiPMarkAuctor.z_score() directly, not through "
+        "this lightweight tokenizer-only script."
+    )
+
+
+def _synthid_z(text: str, tokenizer, tournament_k: int = 16) -> float:
+    """Delegates to auctor_synthid's exact hash/window/g-value logic. Unlike SIR/DiPmark,
+    SynthID's Mean Score statistic only needs token IDs and hash values — no model
+    forward pass — so it's a valid lightweight (tokenizer-only) recompute, like KGW/PECCAVI."""
+    from peccavi.auctor_synthid import _synthid_seed, _g_value
+    m_layers = max(1, int(round(math.log2(max(2, tournament_k)))))
+    token_ids = tokenizer.encode(text)
+    n = len(token_ids)
+    if n == 0:
+        return 0.0
+    total = 0.0
+    count = 0
+    for i, tid in enumerate(token_ids):
+        context_seed = _synthid_seed(token_ids[:i], SECRET_KEY)
+        for layer in range(1, m_layers + 1):
+            total += _g_value(tid, context_seed, layer)
+            count += 1
+    if count == 0:
+        return 0.0
+    ms = total / count
+    return (ms - 0.5) / math.sqrt((1.0 / 12.0) / count)
 
 
 def _get_z_fn(mode: str, tokenizer):
@@ -101,13 +134,14 @@ def _get_z_fn(mode: str, tokenizer):
         return lambda t: _kgw_z(t, tokenizer)
     elif mode == "sir":
         return lambda t: _sir_z(t, tokenizer)
+    elif mode == "dipmark":
+        return lambda t: _dipmark_z(t, tokenizer)
+    elif mode == "synthid":
+        return lambda t: _synthid_z(t, tokenizer)
     else:
         return lambda t: _peccavi_z(t, tokenizer)
 
-
-# ---------------------------------------------------------------------------
 # Lightweight attacks (no backbone required)
-# ---------------------------------------------------------------------------
 
 def _lexical_attack(text: str) -> str:
     try:
@@ -150,45 +184,13 @@ def _syntactic_attack(text: str) -> str:
         return _lexical_attack(text)
 
 
-def _gpt4_attack(text: str, client) -> str:
-    """GPT-4o-mini paraphrase — strongest attack."""
-    try:
-        r = client.chat.completions.create(
-            model="gpt-4o-mini",
-            messages=[
-                {"role": "system", "content": "Rewrite the text with completely different words while preserving meaning. Output only the rewritten text."},
-                {"role": "user", "content": text},
-            ],
-            max_tokens=200,
-            temperature=0.7,
-        )
-        return r.choices[0].message.content.strip() or text
-    except Exception:
-        return _lexical_attack(text)
-
-
-def _build_attack_fns(openai_key: Optional[str]):
-    client = None
-    if openai_key:
-        try:
-            from openai import OpenAI
-            client = OpenAI(api_key=openai_key)
-        except ImportError:
-            pass
-
-    fns = {
+def _build_attack_fns():
+    return {
         "lexical": _lexical_attack,
         "syntactic": _syntactic_attack,
-        "semantic": (lambda t: _gpt4_attack(t, client)) if client else _lexical_attack,
-        "lm_paraphrase": (lambda t: _gpt4_attack(t, client)) if client else _lexical_attack,
-        "gpt4_paraphrase": (lambda t: _gpt4_attack(t, client)) if client else _lexical_attack,
     }
-    return fns
 
-
-# ---------------------------------------------------------------------------
 # Core recompute logic
-# ---------------------------------------------------------------------------
 
 def _inner(data: dict) -> tuple:
     keys = list(data.keys())
@@ -199,7 +201,7 @@ def _inner(data: dict) -> tuple:
     return None, data
 
 
-def recompute(path: str, openai_key: Optional[str] = None) -> None:
+def recompute(path: str) -> None:
     p = Path(path)
     print(f"\n{'='*60}")
     print(f"  Processing: {p.name}")
@@ -210,6 +212,27 @@ def recompute(path: str, openai_key: Optional[str] = None) -> None:
 
     mode = inner.get("watermark_mode", "peccavi")
     model_name = _detect_model(inner)
+
+    if mode == "sir":
+        print(
+            "  SKIPPING: SIR detection now needs a full backbone + trained embedding "
+            "network (peccavi/sir_model.py), not just a tokenizer. Recompute SIR results "
+            "via SIRAuctor.z_score() directly rather than this lightweight script — "
+            "the per-text try/except below would otherwise silently turn the resulting "
+            "NotImplementedError into a fake all-zero survival curve."
+        )
+        return
+
+    if mode == "dipmark":
+        print(
+            "  SKIPPING: DiPmark detection needs a full backbone (per-position LM "
+            "forward passes to re-derive the alpha-reweight), not just a tokenizer. "
+            "Recompute DiPmark results via DiPMarkAuctor.z_score() directly rather "
+            "than this lightweight script — the per-text try/except below would "
+            "otherwise silently turn the resulting NotImplementedError into a fake "
+            "all-zero survival curve."
+        )
+        return
 
     # Extract eval-phase watermarked texts
     records = inner.get("detailed_records", [])
@@ -227,7 +250,7 @@ def recompute(path: str, openai_key: Optional[str] = None) -> None:
 
     backbone = _LightBackbone(model_name)
     z_fn = _get_z_fn(mode, backbone.tokenizer)
-    attack_fns = _build_attack_fns(openai_key)
+    attack_fns = _build_attack_fns()
 
     attack_z_scores: Dict[str, List[float]] = {}
     attack_survival_by_threshold: Dict[str, Dict[str, float]] = {}
@@ -244,7 +267,7 @@ def recompute(path: str, openai_key: Optional[str] = None) -> None:
                 z_list.append(0.0)
         attack_z_scores[attack_name] = [round(z, 4) for z in z_list]
         attack_survival[attack_name] = round(
-            sum(1 for z in z_list if z >= 4.0) / max(len(z_list), 1), 4
+            sum(1 for z in z_list if z >= Z_DETECTION_THRESHOLD) / max(len(z_list), 1), 4
         )
         attack_survival_by_threshold[attack_name] = {
             f"z{t:.1f}": round(sum(1 for z in z_list if z >= t) / max(len(z_list), 1), 4)
@@ -269,12 +292,9 @@ def main():
     if not paths:
         print("Usage: python eval/recompute_attack_survival.py <results.json> [...]")
         sys.exit(1)
-    openai_key = os.environ.get("OPENAI_API_KEY")
-    if not openai_key:
-        print("  OPENAI_API_KEY not set — semantic/lm/gpt4 attacks will use lexical fallback")
     for path in paths:
         try:
-            recompute(path, openai_key)
+            recompute(path)
         except Exception as e:
             print(f"  ERROR {path}: {e}")
     print("\nDone. Re-run eval/survival_analysis.py to see the curves.")
