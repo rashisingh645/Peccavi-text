@@ -51,9 +51,14 @@ def main():
     p.add_argument("--generations", type=int, default=5)
     p.add_argument("--seed", type=int, default=42)
     p.add_argument("--out-dir", default="results")
+    p.add_argument("--gammas", default=None, help="Comma-separated gamma values, overrides the default 0.1,0.25,0.5 grid")
+    p.add_argument("--deltas", default=None, help="Comma-separated delta values, overrides the default 1.0,2.0,5.0 grid")
     args = p.parse_args()
 
     os.makedirs(args.out_dir, exist_ok=True)
+
+    gammas = [float(x) for x in args.gammas.split(",")] if args.gammas else GAMMAS
+    deltas = [float(x) for x in args.deltas.split(",")] if args.deltas else DELTAS
 
     from main import init_backbone, load_profile
     from eval.watermark import run_peccavi
@@ -62,10 +67,10 @@ def main():
     backbone = init_backbone(load_profile(args.config_file, args.profile))
 
     rows = []
-    total = len(GAMMAS) * len(DELTAS)
+    total = len(gammas) * len(deltas)
     done = 0
-    for gamma in GAMMAS:
-        for delta in DELTAS:
+    for gamma in gammas:
+        for delta in deltas:
             done += 1
             tag = f"g{gamma}_d{delta}"
             out_path = os.path.join(args.out_dir, f"kgw_sweep_{tag}.json")
