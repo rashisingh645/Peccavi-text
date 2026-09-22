@@ -345,6 +345,7 @@ def mode_train(backbone, cfg, args):
         theta_max=wm_cfg.get("theta_max", 5.0),
         n_attack_samples=pl_cfg.get("n_attack_samples", 100),
         attack_mix=pl_cfg.get("attack_mix", False),
+        max_tokens=pl_cfg.get("max_tokens", 100),
     )
     # run_peccavi() already writes checkpoint_path itself (before eval, so a crash during
     # eval doesn't lose the learned theta/alpha) — no need to duplicate that write here.

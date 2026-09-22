@@ -552,3 +552,27 @@ profiles:
       n_attack_samples: 100
       generations: 40
       n_eval_samples: 100
+
+  peccavi_rs40_long:
+    # Same as rs40_v2 (rho_survival=0.2, back-translation only, 40 gens, 100 eval) but
+    # generation length raised from 100 to 250 tokens. Tests the sqrt(T) detection-power
+    # hypothesis: published KGW/SIR papers report much stronger attack survival (F1
+    # 0.90-0.96) than anything seen in this codebase at 100 tokens, and detection power
+    # scales with sqrt(text length) per theory.py and the literature, so this is the
+    # highest-leverage untried variable before further reward/mechanism engineering.
+    model: *model_llama
+    watermarking:
+      <<: *peccavi_watermarking_base
+    agents:
+      scriba_n_variants: 3
+    policy_learning:
+      alpha: 0.05
+      gamma: 0.99
+      lambda_wm: 0.6
+      nu_quality: 0.4
+      mu_ppl: 0.1
+      rho_survival: 0.2
+      n_attack_samples: 100
+      max_tokens: 250
+      generations: 40
+      n_eval_samples: 100
