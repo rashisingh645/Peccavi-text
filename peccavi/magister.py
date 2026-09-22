@@ -5,6 +5,7 @@ Updates watermark parameter θ to maximise composite reward.
 """
 
 from __future__ import annotations
+import random
 import torch
 import numpy as np
 from backbone.model import LLaMABackbone
@@ -90,8 +91,10 @@ class Magister:
         theta_min: float = THETA_MIN,
         theta_max: float = THETA_MAX,
         df_window: int = 5,
+        extra_attacks: Optional[list] = None,
     ):
         self.backbone = backbone
+        self.extra_attacks = extra_attacks or []
         self.theta = theta_init
         self.alpha = alpha
         self.gamma = gamma
@@ -136,39 +139,50 @@ w is learbnt weight vector for prmpts and features is the feature vector extract
         }
 
     def _lazy_load_marianmt(self) -> None:
-        """Load MarianMT EN→FR→EN models lazily on first use (CPU only)."""
+        """Load MarianMT EN→FR→EN models lazily on first use, onto the same device
+        as the main backbone when it's a GPU — these are small (~300M param) models,
+        so they fit comfortably alongside a loaded 7B backbone, and running the
+        back-translation attack on GPU instead of CPU is the difference between
+        rho_survival being usable in training and being a multi-minute-per-step
+        bottleneck (CPU was the deliberate original default, kept here as fallback
+        when no GPU is available)."""
         if hasattr(self, "_marian_loaded"):
             return
         try:
             from transformers import MarianMTModel, MarianTokenizer
-            logger.info("Loading MarianMT EN→FR→EN for attack-aware training...")
+            self._marian_device = (
+                self.backbone.model.device
+                if hasattr(self.backbone, "model") and torch.cuda.is_available()
+                else "cpu"
+            )
+            logger.info(f"Loading MarianMT EN→FR→EN for attack-aware training onto {self._marian_device}...")
             self._tok_en_fr = MarianTokenizer.from_pretrained("Helsinki-NLP/opus-mt-en-fr")
-            self._mdl_en_fr = MarianMTModel.from_pretrained("Helsinki-NLP/opus-mt-en-fr")
+            self._mdl_en_fr = MarianMTModel.from_pretrained("Helsinki-NLP/opus-mt-en-fr").to(self._marian_device)
             self._tok_fr_en = MarianTokenizer.from_pretrained("Helsinki-NLP/opus-mt-fr-en")
-            self._mdl_fr_en = MarianMTModel.from_pretrained("Helsinki-NLP/opus-mt-fr-en")
+            self._mdl_fr_en = MarianMTModel.from_pretrained("Helsinki-NLP/opus-mt-fr-en").to(self._marian_device)
             self._mdl_en_fr.eval()
             self._mdl_fr_en.eval()
             self._marian_loaded = True
-            logger.info("MarianMT loaded on CPU for back-translation attack")
+            logger.info(f"MarianMT loaded on {self._marian_device} for back-translation attack")
         except Exception as e:
             logger.warning(f"MarianMT unavailable ({e}) — rho_survival term disabled")
             self._marian_loaded = False
 
     def _back_translate(self, text: str) -> str:
-        """EN→FR→EN back-translation using MarianMT. Runs on CPU."""
+        """EN→FR→EN back-translation using MarianMT, on whichever device it was loaded onto."""
         if not getattr(self, "_marian_loaded", False) or not text.strip():
             return text
         try:
             import torch
             enc = self._tok_en_fr(
                 text, return_tensors="pt", truncation=True, max_length=512, padding=True
-            )
+            ).to(self._marian_device)
             with torch.no_grad():
                 fr_ids = self._mdl_en_fr.generate(**enc, max_new_tokens=512)
             fr = self._tok_en_fr.decode(fr_ids[0], skip_special_tokens=True)
             enc2 = self._tok_fr_en(
                 fr, return_tensors="pt", truncation=True, max_length=512, padding=True
-            )
+            ).to(self._marian_device)
             with torch.no_grad():
                 en_ids = self._mdl_fr_en.generate(**enc2, max_new_tokens=512)
             return self._tok_fr_en.decode(en_ids[0], skip_special_tokens=True)
@@ -326,7 +340,9 @@ w is learbnt weight vector for prmpts and features is the feature vector extract
         if self.rho_survival > 0.0:
             self._lazy_load_marianmt()
             if getattr(self, "_marian_loaded", False):
-                attacked = self._back_translate(generated_text)
+                attack_fn = (random.choice([self._back_translate] + self.extra_attacks)
+                             if self.extra_attacks else self._back_translate)
+                attacked = attack_fn(generated_text)
                 survival_score = self._survival_score(attacked, alpha_used=current_param if green_flags is not None else None)
 
         reward = composite_reward(
