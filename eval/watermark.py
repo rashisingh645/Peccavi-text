@@ -87,8 +87,12 @@ def run_peccavi(
 
     train_attack_pool = None
     if attack_mix and rho_survival > 0.0:
+        # lexical_attack deliberately excluded: it's a context-blind WordNet synonym
+        # substitution that often produces mangled, barely-coherent text. Empirically
+        # (mix40 run: theta collapsed below theta_init, AUC fell to near-chance) it
+        # injects too much reward noise into REINFORCE to be useful as a training-time
+        # attack, even though it's a legitimate eval-time attack to test survival against.
         train_attack_pool = [
-            scriba.lexical_attack,
             lambda t: scriba.lm_paraphrase(t, "Rephrase the following:\n\n{text}"),
         ]
 

@@ -530,3 +530,25 @@ profiles:
     policy_learning:
       generations: 5
       n_eval_samples: 400
+
+  peccavi_mix2_40:
+    # Same as peccavi_mix40 but lexical_attack dropped from the training-time attack
+    # pool (mix40 showed it collapses training - theta fell below theta_init, AUC near
+    # chance). Tests whether {back-translation, lm_paraphrase} alone generalizes
+    # robustness without lexical_attack's reward noise. Same scale/alpha as rs40_v2/mix40.
+    model: *model_llama
+    watermarking:
+      <<: *peccavi_watermarking_base
+    agents:
+      scriba_n_variants: 3
+    policy_learning:
+      alpha: 0.05
+      gamma: 0.99
+      lambda_wm: 0.6
+      nu_quality: 0.4
+      mu_ppl: 0.1
+      rho_survival: 0.2
+      attack_mix: true
+      n_attack_samples: 100
+      generations: 40
+      n_eval_samples: 100
