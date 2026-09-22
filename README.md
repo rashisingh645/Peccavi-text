@@ -1,1 +1,1 @@
-PECCAVI CORRIGO: Content-Adaptive LLM Watermarking via Attack-Aware Policy Gradient
+PECCAVI_CORRIGO: Content-Adaptive LLM Watermarking via Attack-Aware Policy Gradient
