@@ -576,3 +576,33 @@ profiles:
       max_tokens: 250
       generations: 40
       n_eval_samples: 100
+
+  kgw_matched_long:
+    # KGW re-run matched to rs40_long's exact settings (250 tokens, 100 eval, 100 attack
+    # samples) for a fair same-methodology comparison. The earlier kgw_matched used the
+    # old 100-token/30-attack-sample settings and is not comparable to rs40_long.
+    model: *model_llama
+    watermarking:
+      theta_init: 2.0
+      delta: 2.0
+      gamma: 0.5
+      watermark_mode: "kgw"
+    policy_learning:
+      generations: 5
+      n_eval_samples: 100
+      n_attack_samples: 100
+      max_tokens: 250
+
+  synthid_matched_long:
+    # SynthID re-run matched to rs40_long's exact settings, same reasoning as above.
+    model: *model_llama
+    watermarking:
+      theta_init: 2.0
+      tournament_k: 16
+      secret_key: "PECCAVI-SECRET"
+      watermark_mode: "synthid"
+    policy_learning:
+      generations: 5
+      n_eval_samples: 100
+      n_attack_samples: 100
+      max_tokens: 250
