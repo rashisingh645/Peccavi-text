@@ -606,3 +606,50 @@ profiles:
       n_eval_samples: 100
       n_attack_samples: 100
       max_tokens: 250
+
+  peccavi_rs40_tk64:
+    # Same as rs40_long (rho_survival=0.2, back-translation only, 40 gens, 100 eval,
+    # 250 tokens) but tournament_k raised from 16 to 64. Tests whether Auctor's top-k
+    # truncation (which KGW's additive-delta mechanism doesn't have) is the structural
+    # reason tuned KGW (AUC 0.997, syn z4 survival 0.56) currently beats PECCAVI (AUC
+    # 0.952, syn z4 survival 0.10) at matched settings.
+    model: *model_llama
+    watermarking:
+      <<: *peccavi_watermarking_base
+      tournament_k: 64
+    agents:
+      scriba_n_variants: 3
+    policy_learning:
+      alpha: 0.05
+      gamma: 0.99
+      lambda_wm: 0.6
+      nu_quality: 0.4
+      mu_ppl: 0.1
+      rho_survival: 0.2
+      n_attack_samples: 100
+      max_tokens: 250
+      generations: 40
+      n_eval_samples: 100
+
+  peccavi_rs40_tk_full:
+    # Same as above but tournament_k effectively removed (set far above Llama-2's
+    # ~32000 vocab size; Auctor's own code already clamps to vocab_size-1). This is the
+    # cleanest test of the top-k-truncation hypothesis: no candidate token is excluded
+    # from re-weighting regardless of its raw likelihood rank.
+    model: *model_llama
+    watermarking:
+      <<: *peccavi_watermarking_base
+      tournament_k: 100000
+    agents:
+      scriba_n_variants: 3
+    policy_learning:
+      alpha: 0.05
+      gamma: 0.99
+      lambda_wm: 0.6
+      nu_quality: 0.4
+      mu_ppl: 0.1
+      rho_survival: 0.2
+      n_attack_samples: 100
+      max_tokens: 250
+      generations: 40
+      n_eval_samples: 100
