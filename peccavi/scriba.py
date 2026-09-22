@@ -36,11 +36,16 @@ class Scriba:
         self.backbone = backbone
         self.n_variants = n_variants
         self._translation_available = False
+        self._marian_device = (
+            backbone.model.device
+            if hasattr(backbone, "model") and torch.cuda.is_available()
+            else "cpu"
+        )
         try:
             self._tok_en_fr = MarianTokenizer.from_pretrained("Helsinki-NLP/opus-mt-en-fr")
-            self._mdl_en_fr = MarianMTModel.from_pretrained("Helsinki-NLP/opus-mt-en-fr")
+            self._mdl_en_fr = MarianMTModel.from_pretrained("Helsinki-NLP/opus-mt-en-fr").to(self._marian_device)
             self._tok_fr_en = MarianTokenizer.from_pretrained("Helsinki-NLP/opus-mt-fr-en")
-            self._mdl_fr_en = MarianMTModel.from_pretrained("Helsinki-NLP/opus-mt-fr-en")
+            self._mdl_fr_en = MarianMTModel.from_pretrained("Helsinki-NLP/opus-mt-fr-en").to(self._marian_device)
             self._translation_available = True
         except Exception:
             pass
@@ -61,11 +66,11 @@ class Scriba:
         if not self._translation_available:
             return self.lm_paraphrase(text, random.choice(PARAPHRASE_PROMPTS))
         try:
-            inputs = self._tok_en_fr(text, return_tensors="pt", truncation=True, max_length=512)
+            inputs = self._tok_en_fr(text, return_tensors="pt", truncation=True, max_length=512).to(self._marian_device)
             with torch.no_grad():
                 fr_ids = self._mdl_en_fr.generate(**inputs)
             fr_text = self._tok_en_fr.decode(fr_ids[0], skip_special_tokens=True)
-            inputs2 = self._tok_fr_en(fr_text, return_tensors="pt", truncation=True, max_length=512)
+            inputs2 = self._tok_fr_en(fr_text, return_tensors="pt", truncation=True, max_length=512).to(self._marian_device)
             with torch.no_grad():
                 en_ids = self._mdl_fr_en.generate(**inputs2)
             return self._tok_fr_en.decode(en_ids[0], skip_special_tokens=True)

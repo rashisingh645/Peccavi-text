@@ -393,3 +393,140 @@ profiles:
       generations: 5
       n_eval_samples: 500
     success_criteria: *success_default
+
+  peccavi_mix40:
+    # rs40 (rho_survival=0.2, 40 gens) but the training-time attack is sampled each step
+    # from {back-translation, lexical substitution, LM paraphrase} instead of always
+    # back-translation. Directly comparable to peccavi_rs40; isolates the attack-mix change.
+    model: *model_llama
+    watermarking:
+      <<: *peccavi_watermarking_base
+    agents:
+      scriba_n_variants: 3
+    policy_learning:
+      alpha: 0.05
+      gamma: 0.99
+      lambda_wm: 0.6
+      nu_quality: 0.4
+      mu_ppl: 0.1
+      rho_survival: 0.2
+      attack_mix: true
+      n_attack_samples: 100
+      generations: 40
+      n_eval_samples: 100
+
+  peccavi_mix_lowlr80:
+    # Attack-mix plus a smaller REINFORCE step size (0.02 vs 0.05) at 80 gens, to test
+    # whether the rs80 regression was noisy-reward overshoot rather than too many steps.
+    model: *model_llama
+    watermarking:
+      <<: *peccavi_watermarking_base
+    agents:
+      scriba_n_variants: 3
+    policy_learning:
+      alpha: 0.02
+      gamma: 0.99
+      lambda_wm: 0.6
+      nu_quality: 0.4
+      mu_ppl: 0.1
+      rho_survival: 0.2
+      attack_mix: true
+      n_attack_samples: 100
+      generations: 80
+      n_eval_samples: 150
+
+
+  # ---- Scale-up and attack-aware runs (GPU experiments) ----
+  mid_size:
+    # 40 training generations + 100 eval samples, no attack-aware term.
+    model: *model_llama
+    watermarking:
+      <<: *peccavi_watermarking_base
+    agents:
+      scriba_n_variants: 3
+    policy_learning:
+      alpha: 0.05
+      gamma: 0.99
+      lambda_wm: 0.6
+      nu_quality: 0.4
+      mu_ppl: 0.1
+      generations: 40
+      n_eval_samples: 100
+
+  step80:
+    # 80 training generations + 150 eval samples, no attack-aware term.
+    model: *model_llama
+    watermarking:
+      <<: *peccavi_watermarking_base
+    agents:
+      scriba_n_variants: 3
+    policy_learning:
+      alpha: 0.05
+      gamma: 0.99
+      lambda_wm: 0.6
+      nu_quality: 0.4
+      mu_ppl: 0.1
+      generations: 80
+      n_eval_samples: 150
+
+  peccavi_120:
+    # 120 training generations + 400 eval samples, no attack-aware term.
+    model: *model_llama
+    watermarking:
+      <<: *peccavi_watermarking_base
+    agents:
+      scriba_n_variants: 3
+    policy_learning:
+      alpha: 0.05
+      gamma: 0.99
+      lambda_wm: 0.6
+      nu_quality: 0.4
+      mu_ppl: 0.1
+      generations: 120
+      n_eval_samples: 400
+
+  peccavi_rs40:
+    # Attack-aware training (rho_survival=0.2), directly comparable to mid_size.
+    model: *model_llama
+    watermarking:
+      <<: *peccavi_watermarking_base
+    agents:
+      scriba_n_variants: 3
+    policy_learning:
+      alpha: 0.05
+      gamma: 0.99
+      lambda_wm: 0.6
+      nu_quality: 0.4
+      mu_ppl: 0.1
+      rho_survival: 0.2
+      generations: 40
+      n_eval_samples: 100
+
+  peccavi_rs80:
+    # Attack-aware training at step80's scale, for direct comparison.
+    model: *model_llama
+    watermarking:
+      <<: *peccavi_watermarking_base
+    agents:
+      scriba_n_variants: 3
+    policy_learning:
+      alpha: 0.05
+      gamma: 0.99
+      lambda_wm: 0.6
+      nu_quality: 0.4
+      mu_ppl: 0.1
+      rho_survival: 0.2
+      generations: 80
+      n_eval_samples: 150
+
+  kgw_matched:
+    # KGW baseline matched to peccavi_120's eval scale for fair comparison.
+    model: *model_llama
+    watermarking:
+      theta_init: 2.0
+      delta: 2.0
+      gamma: 0.5
+      watermark_mode: "kgw"
+    policy_learning:
+      generations: 5
+      n_eval_samples: 400

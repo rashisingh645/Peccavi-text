@@ -76,12 +76,21 @@ def run_peccavi(
     adaptive_theta: bool = False,
     theta_min: float = THETA_MIN,
     theta_max: float = THETA_MAX,
+    n_attack_samples: int = 100,
+    attack_mix: bool = False,
 ) -> Dict:
     _set_seed(seed)
 
     praeco = Praeco()
     scriba = Scriba(backbone, n_variants=n_paraphrases)
     custos = Custos(backbone)
+
+    train_attack_pool = None
+    if attack_mix and rho_survival > 0.0:
+        train_attack_pool = [
+            scriba.lexical_attack,
+            lambda t: scriba.lm_paraphrase(t, "Rephrase the following:\n\n{text}"),
+        ]
 
     if watermark_mode == "kgw":
         generator = KGWAuctor(backbone, delta=kgw_delta, gamma=kgw_gamma)
@@ -111,7 +120,7 @@ def run_peccavi(
             backbone, theta_init=df_alpha_init, alpha=alpha, lam=lam, nu=nu,
             mu_ppl=mu_ppl, rho_survival=rho_survival,
             adaptive=adaptive_theta, theta_min=df_alpha_min, theta_max=df_alpha_max,
-            df_window=df_window,
+            df_window=df_window, extra_attacks=train_attack_pool,
         )
     elif watermark_mode == "none":
         generator = None
@@ -122,6 +131,7 @@ def run_peccavi(
             backbone, theta_init=theta_init, alpha=alpha, lam=lam, nu=nu,
             mu_ppl=mu_ppl, rho_survival=rho_survival,
             adaptive=adaptive_theta, theta_min=theta_min, theta_max=theta_max,
+            extra_attacks=train_attack_pool,
         )
 
     featurizer = PromptFeaturizer(backbone) if (adaptive_theta and watermark_mode in ("peccavi", "peccavi_df")) else None
@@ -325,7 +335,9 @@ def run_peccavi(
     attack_survival: Dict[str, float] = {}
     attack_z_scores: Dict[str, List[float]] = {}
     attack_survival_by_threshold: Dict[str, Dict[str, float]] = {}
-    sample_attack = min(30, n_eval_samples)
+    attack_auc: Dict[str, float] = {}
+    attack_tpr_at_1fpr: Dict[str, float] = {}
+    sample_attack = min(n_attack_samples, n_eval_samples)
     for attack_idx, attack_name in enumerate(attack_names):
         z_list = []
         for wm_text in wm_texts_eval[:sample_attack]:
@@ -340,6 +352,17 @@ def run_peccavi(
             f"z{t:.1f}": round(sum(1 for z in z_list if z >= t) / max(len(z_list), 1), 4)
             for t in THRESHOLDS
         }
+        # Continuous robustness metric: how well attacked-watermarked text still separates
+        # from the unwatermarked baseline z-scores, using every z instead of one hard cutoff.
+        try:
+            _lbl = [0] * len(baseline_z) + [1] * len(z_list)
+            _scr = list(baseline_z) + list(z_list)
+            attack_auc[attack_name] = round(float(roc_auc_score(_lbl, _scr)), 4)
+            _fpr_c, _tpr_c, _ = roc_curve(_lbl, _scr)
+            attack_tpr_at_1fpr[attack_name] = round(float(np.interp(0.01, _fpr_c, _tpr_c)), 4)
+        except ValueError:
+            attack_auc[attack_name] = None
+            attack_tpr_at_1fpr[attack_name] = None
 
     logger.info("Building detailed eval records...")
     EVAL_DETAIL_LIMIT = 50
@@ -425,6 +448,9 @@ def run_peccavi(
         "attack_survival": attack_survival,
         "attack_z_scores": attack_z_scores,
         "attack_survival_by_threshold": attack_survival_by_threshold,
+        "attack_auc": attack_auc,
+        "attack_tpr_at_1fpr": attack_tpr_at_1fpr,
+        "n_attack_samples": sample_attack,
         "adaptive_theta": adaptive_theta,
         "w_final": magister.w.tolist() if (magister and adaptive_theta) else None,
         "w_feature_names": ["token_entropy", "length_norm", "vocab_diversity", "avg_token_len_norm"],
