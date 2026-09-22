@@ -78,6 +78,7 @@ def run_peccavi(
     theta_max: float = THETA_MAX,
     n_attack_samples: int = 100,
     attack_mix: bool = False,
+    max_tokens: int = 100,
 ) -> Dict:
     _set_seed(seed)
 
@@ -156,11 +157,11 @@ def run_peccavi(
                     generator.theta = context_theta
                 else:
                     generator.alpha = context_theta
-                wm_text = generator.generate(prompt, max_tokens=100)
+                wm_text = generator.generate(prompt, max_tokens=max_tokens)
             elif watermark_mode in ("kgw", "sir", "dipmark", "synthid"):
-                wm_text = generator.generate(prompt, max_tokens=100)
+                wm_text = generator.generate(prompt, max_tokens=max_tokens)
             else:
-                wm_text = backbone.generate(prompt, max_new_tokens=100)["text"]
+                wm_text = backbone.generate(prompt, max_new_tokens=max_tokens)["text"]
 
             _uses_generator_z = watermark_mode in ("kgw", "sir", "dipmark", "synthid", "peccavi_df")
             if _uses_generator_z:
@@ -265,13 +266,13 @@ def run_peccavi(
     eval_prompts = praeco.batch_prompts(n_eval_samples)
 
     baseline_texts = [
-        backbone.generate(p, max_new_tokens=100)["text"]
+        backbone.generate(p, max_new_tokens=max_tokens)["text"]
         for p in eval_prompts
     ]
 
     if watermark_mode == "none":
         wm_texts_eval = [
-            backbone.generate(p, max_new_tokens=100)["text"]
+            backbone.generate(p, max_new_tokens=max_tokens)["text"]
             for p in eval_prompts
         ]
     else:
@@ -286,7 +287,7 @@ def run_peccavi(
                     generator.alpha = ctx_val
                 else:
                     generator.theta = ctx_val
-            wm_texts_eval.append(generator.generate(p, max_tokens=100))
+            wm_texts_eval.append(generator.generate(p, max_tokens=max_tokens))
 
     use_generator_z = watermark_mode in ("kgw", "sir", "dipmark", "synthid", "peccavi_df")
     if use_generator_z:
