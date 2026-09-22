@@ -20,7 +20,15 @@ import argparse
 import json
 import logging
 import os
+import sys
 import time
+
+# `python scripts/kgw_gamma_delta_sweep.py` doesn't put the repo root on sys.path
+# (only the script's own directory), so `from main import ...` below can't find
+# main.py unless we add it explicitly — same fix backbone/model.py already uses.
+_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if _root not in sys.path:
+    sys.path.insert(0, _root)
 
 logging.basicConfig(
     level=logging.INFO,
