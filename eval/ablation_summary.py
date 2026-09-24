@@ -25,7 +25,6 @@ METRICS = [
     "auc_roc",
     "tpr_at_1fpr",
     "ppl_ratio",
-    "avg_gpt4_quality",
     "avg_readability",
     "effective_score_final",
     "theta_final",
@@ -35,7 +34,6 @@ COL_LABELS = {
     "auc_roc":               "AUC-ROC",
     "tpr_at_1fpr":           "TPR@1%FPR",
     "ppl_ratio":             "PPL ratio",
-    "avg_gpt4_quality":      "GPT-4 Q",
     "avg_readability":       "Readability",
     "effective_score_final": "S_eff",
     "theta_final":           "theta_final",
@@ -118,7 +116,7 @@ def main():
         rows.append(row)
 
     # ── print table ──────────────────────────────────────────────────────────
-    primary_metrics = ["auc_roc", "tpr_at_1fpr", "ppl_ratio", "avg_gpt4_quality"]
+    primary_metrics = ["auc_roc", "tpr_at_1fpr", "ppl_ratio", "avg_readability"]
     col_w = 16
 
     header = f"{'Variant':<32}" + "".join(f"{COL_LABELS[m]:>{col_w}}" for m in primary_metrics) + f"{'seeds':>8}"
@@ -136,7 +134,7 @@ def main():
         for m in primary_metrics:
             mean = row.get(f"{m}_mean")
             std  = row.get(f"{m}_std")
-            decimals = 3 if m in ("auc_roc", "tpr_at_1fpr", "ppl_ratio") else 2
+            decimals = 2 if m == "avg_readability" else 3
             cols.append(fmt(mean, std, decimals))
         line = f"{name:<32}" + "".join(f"{c:>{col_w}}" for c in cols) + f"  {seeds_str}"
         print(line)
@@ -151,7 +149,7 @@ def main():
         for m in METRICS:
             mean = row.get(f"{m}_mean")
             std  = row.get(f"{m}_std")
-            decimals = 3 if m != "avg_gpt4_quality" else 2
+            decimals = 2 if m == "avg_readability" else 3
             print(f"    {COL_LABELS[m]:<18} {fmt(mean, std, decimals)}")
         print()
 

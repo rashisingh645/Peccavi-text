@@ -23,7 +23,7 @@ METRICS = [
     ("auc_roc",           "AUC-ROC"),
     ("tpr_at_1fpr",       "TPR@1%FPR"),
     ("ppl_ratio",         "PPL ratio"),
-    ("avg_gpt4_quality",  "Quality"),
+    ("avg_readability",   "Readability"),
     ("avg_retention_rate","Retention"),
     ("false_positive_rate","FPR@z4"),
 ]
