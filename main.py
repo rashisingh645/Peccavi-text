@@ -293,6 +293,8 @@ def mode_synthid(backbone, cfg, args):
         theta_init=wm_cfg.get("theta_init", 2.0),
         watermark_mode="synthid",
         synthid_tournament_k=wm_cfg.get("tournament_k", 16),
+        synthid_score_function=wm_cfg.get("score_function", "bayesian"),
+        synthid_g_distribution=wm_cfg.get("g_distribution", "bernoulli"),
         seed=seed,
     )
 
