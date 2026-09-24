@@ -338,6 +338,7 @@ def mode_train(backbone, cfg, args):
         n_eval_samples=pl_cfg.get("n_eval_samples", 100),
         verbose=True,
         theta_init=wm_cfg.get("theta_init", 2.0),
+        tournament_k=wm_cfg.get("tournament_k", 16),
         watermark_mode=wm_mode,
         df_alpha_init=wm_cfg.get("alpha_init", 0.3),
         df_alpha_min=wm_cfg.get("alpha_min", 0.05),

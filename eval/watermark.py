@@ -51,6 +51,7 @@ def run_peccavi(
     n_eval_samples: int = 100,
     verbose: bool = True,
     theta_init: float = 2.0,
+    tournament_k: int = 16,            # PECCAVI's own Auctor top-k truncation (peccavi mode only)
     watermark_mode: str = "peccavi",   # "peccavi" | "peccavi_df" | "kgw" | "sir" | "none"
     df_alpha_init: float = 0.3,        # peccavi_df: starting DiPmark alpha (distinct from `alpha`, the REINFORCE learning rate below)
     df_alpha_min: float = 0.05,
@@ -135,7 +136,7 @@ def run_peccavi(
         generator = None
         magister = None
     else:
-        generator = Auctor(backbone, theta=theta_init)
+        generator = Auctor(backbone, theta=theta_init, tournament_k=tournament_k)
         magister = Magister(
             backbone, theta_init=theta_init, alpha=alpha, lam=lam, nu=nu,
             mu_ppl=mu_ppl, rho_survival=rho_survival,
