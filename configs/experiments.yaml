@@ -595,10 +595,58 @@ profiles:
 
   synthid_matched_long:
     # SynthID re-run matched to rs40_long's exact settings, same reasoning as above.
+    # NOTE: as of the auctor_synthid.py literature fix, this profile's z_score() now uses
+    # the Bayesian Score over Bernoulli(0.5) g-values by default (previously Mean Score
+    # over Uniform(0,1) g-values) — results from before that fix are not directly
+    # comparable to results from this profile run after it. Use synthid_mean_ablation_long
+    # to reproduce the old Mean-Score behaviour for a controlled before/after comparison.
     model: *model_llama
     watermarking:
       theta_init: 2.0
       tournament_k: 16
+      secret_key: "PECCAVI-SECRET"
+      watermark_mode: "synthid"
+    policy_learning:
+      generations: 5
+      n_eval_samples: 100
+      n_attack_samples: 100
+      max_tokens: 250
+
+  synthid_mean_ablation_long:
+    # Same as synthid_matched_long but forced onto the OLD Mean Score + Uniform(0,1)
+    # g-values, purely so we can report a controlled Mean-vs-Bayesian ablation at
+    # matched tournament_k, mirroring the analysis paper's own MS-vs-BS comparison.
+    model: *model_llama
+    watermarking:
+      theta_init: 2.0
+      tournament_k: 16
+      score_function: "mean"
+      g_distribution: "uniform"
+      secret_key: "PECCAVI-SECRET"
+      watermark_mode: "synthid"
+    policy_learning:
+      generations: 5
+      n_eval_samples: 100
+      n_attack_samples: 100
+      max_tokens: 250
+
+  synthid_bayesian_tk4096_long:
+    # SynthID with the literature-corrected defaults (Bayesian Score, Bernoulli(0.5))
+    # AND a much higher tournament_k than the codebase's old default of 16 (m=4 layers).
+    # The paper's own headline setting is m=30 layers (tournament_k=2^30), which is
+    # computationally intractable for this implementation's per-token candidate-sampling
+    # approach (see MAX_PRACTICAL_TOURNAMENT_K in auctor_synthid.py); tournament_k=4096
+    # (m=12 layers) is a tractable middle ground, still 3x deeper than the earlier
+    # peccavi_rs40_tk_full exploration's m used for PECCAVI's own Auctor, and — because
+    # Bayesian Score's TPR is monotonically non-decreasing in layer count (unlike Mean
+    # Score's unimodal TPR) — should not backfire the way naively raising layers under
+    # Mean Score would.
+    model: *model_llama
+    watermarking:
+      theta_init: 2.0
+      tournament_k: 4096
+      score_function: "bayesian"
+      g_distribution: "bernoulli"
       secret_key: "PECCAVI-SECRET"
       watermark_mode: "synthid"
     policy_learning:
