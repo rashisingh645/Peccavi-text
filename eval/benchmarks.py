@@ -78,7 +78,6 @@ def _peccavi_summary(pec_out: Dict) -> Dict:
         "ppl_ratio": pec_out.get("ppl_ratio"),
         "attack_survival": pec_out.get("attack_survival", {}),
         "avg_readability": pec_out["avg_readability"],
-        "avg_gpt4_quality": pec_out.get("avg_gpt4_quality"),
         "pass_retention": pec_out["meets_85pct_retention"],
         "pass_auc": pec_out["meets_90pct_auc"],
         "pass_readability": pec_out.get("meets_readability_30", pec_out["meets_readability_45"]),
@@ -207,5 +206,3 @@ def _print_summary(report: Dict):
             surv = results["attack_survival"]
             parts = "  |  ".join(f"{k}: {v:.2f}" for k, v in surv.items())
             print(f"  Attack survival   : {parts}")
-        if results.get("avg_gpt4_quality") is not None:
-            print(f"  GPT-4 Quality     : {results['avg_gpt4_quality']:.2f}/5")

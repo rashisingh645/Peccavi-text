@@ -22,7 +22,7 @@ from peccavi.custos import Custos
 from peccavi.magister import Magister
 from peccavi.featurizer import PromptFeaturizer
 from peccavi.constants import THETA_MIN, THETA_MAX, Z_DETECTION_THRESHOLD
-from eval.quality import quality_score, flesch_quality_score, perplexity
+from eval.quality import flesch_quality_score, perplexity
 from sklearn.metrics import roc_auc_score, roc_curve
 from typing import Dict, List
 import logging
@@ -193,7 +193,6 @@ def run_peccavi(
                 para_z = [custos.z_score(p) for p in paraphrases]
             retention = sum(1 for z in para_z if z >= z_threshold) / max(len(para_z), 1)
 
-            q_score = quality_score(wm_text, prompt=prompt)
             readability = flesch_quality_score(wm_text)
 
             _feats = features if watermark_mode in ("peccavi", "peccavi_df") else None
@@ -226,7 +225,6 @@ def run_peccavi(
             "effective_z_score": round(z_eff, 4),
             "retention_rate": round(retention, 4),
             "readability": readability,
-            "gpt4_quality": q_score,
         }
         history.append(record)
 
@@ -245,7 +243,6 @@ def run_peccavi(
                 "theta": round(new_theta, 4),
                 "theta_context": round(context_theta if watermark_mode in ("peccavi", "peccavi_df") else new_theta, 4),
                 "readability": readability,
-                "gpt4_quality": q_score,
             },
         })
 
@@ -409,7 +406,6 @@ def run_peccavi(
     improvement = (last_eff - first_eff) / max(first_eff, 1e-6) * 100 if history else 0.0
 
     avg_readability = round(sum(r["readability"] for r in history) / len(history), 2) if history else 0.0
-    avg_gpt4_quality = round(sum(r["gpt4_quality"] for r in history) / len(history), 2) if history else 0.0
     avg_retention = round(sum(r["retention_rate"] for r in history) / len(history), 4) if history else 0.0
 
     # Mean θ per prompt-entropy quartile — primary evidence for content-adaptive claim.
@@ -466,7 +462,6 @@ def run_peccavi(
         "theta_by_prompt": theta_by_prompt,
         "theta_by_quartile": theta_by_quartile,
         "avg_readability": avg_readability,
-        "avg_gpt4_quality": avg_gpt4_quality,
         "meets_readability_45": avg_readability >= 4.5,
         "meets_readability_30": avg_readability >= 3.0,
         "history": history,

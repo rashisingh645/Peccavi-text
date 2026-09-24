@@ -22,7 +22,6 @@ METRICS = [
     ("theta_final",           "θ_final",           "{:.4f}", "—"),
     ("improvement_pct",       "Improvement %",     "{:.1f}",  "—"),
     ("avg_readability",       "Readability",       "{:.2f}",  "≥3.0"),
-    ("avg_gpt4_quality",      "GPT-4 Quality",    "{:.2f}",  "≥3.0"),
 ]
 
 
