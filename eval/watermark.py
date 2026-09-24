@@ -22,7 +22,7 @@ from peccavi.custos import Custos
 from peccavi.magister import Magister
 from peccavi.featurizer import PromptFeaturizer
 from peccavi.constants import THETA_MIN, THETA_MAX, Z_DETECTION_THRESHOLD
-from eval.quality import flesch_quality_score, perplexity
+from eval.quality import flesch_quality_score, perplexity, ORACLE_MODEL_NAME
 from sklearn.metrics import roc_auc_score, roc_curve
 from typing import Dict, List
 import logging
@@ -313,7 +313,7 @@ def run_peccavi(
     fpr = fp / len(baseline_texts)
 
     # Perplexity ratio: PPL(watermarked) / PPL(baseline) — should be close to 1.0
-    logger.info("Computing perplexity ratio (GPT-2)...")
+    logger.info(f"Computing perplexity ratio (oracle: {ORACLE_MODEL_NAME})...")
     sample_size = min(50, n_eval_samples)
     ppl_baseline = [perplexity(t) for t in baseline_texts[:sample_size]]
     ppl_wm = [perplexity(t) for t in wm_texts_eval[:sample_size]]
