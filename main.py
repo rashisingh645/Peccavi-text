@@ -182,6 +182,8 @@ def mode_kgw(backbone, cfg, args):
         watermark_mode="kgw",
         kgw_delta=wm_cfg.get("delta", 2.0),
         kgw_gamma=wm_cfg.get("gamma", 0.5),
+        n_attack_samples=pl_cfg.get("n_attack_samples", 100),
+        max_tokens=pl_cfg.get("max_tokens", 100),
         seed=seed,
     )
 
@@ -223,6 +225,8 @@ def mode_sir(backbone, cfg, args):
         ),
         sir_checkpoint_path=wm_cfg.get("checkpoint_path", "results/sir_transform_model.pt"),
         sir_proj_dim=wm_cfg.get("proj_dim", 1000),
+        n_attack_samples=pl_cfg.get("n_attack_samples", 100),
+        max_tokens=pl_cfg.get("max_tokens", 100),
         seed=seed,
     )
 
@@ -259,6 +263,8 @@ def mode_dipmark(backbone, cfg, args):
         dipmark_delta=wm_cfg.get("delta", 2.0),
         dipmark_gamma=wm_cfg.get("gamma", 0.5),
         dipmark_window=wm_cfg.get("window", 5),
+        n_attack_samples=pl_cfg.get("n_attack_samples", 100),
+        max_tokens=pl_cfg.get("max_tokens", 100),
         seed=seed,
     )
 
@@ -295,6 +301,8 @@ def mode_synthid(backbone, cfg, args):
         synthid_tournament_k=wm_cfg.get("tournament_k", 16),
         synthid_score_function=wm_cfg.get("score_function", "bayesian"),
         synthid_g_distribution=wm_cfg.get("g_distribution", "bernoulli"),
+        n_attack_samples=pl_cfg.get("n_attack_samples", 100),
+        max_tokens=pl_cfg.get("max_tokens", 100),
         seed=seed,
     )
 

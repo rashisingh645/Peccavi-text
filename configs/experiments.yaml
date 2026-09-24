@@ -377,6 +377,46 @@ profiles:
       n_eval_samples: 500
     success_criteria: *success_default
 
+  sir_matched_long:
+    # SIR re-run matched to rs40_long/kgw_matched_long/synthid_matched_long's exact
+    # settings (250 tokens, 100 eval, 100 attack samples) -- the plain sir_baseline
+    # profile above never set max_tokens/n_attack_samples, so before the main.py fix
+    # threading pl_cfg through mode_sir(), it silently ran at 100 tokens regardless.
+    model: *model_llama
+    watermarking:
+      theta_init: 2.0
+      delta: 2.0
+      secret_key: "PECCAVI-SECRET"
+      watermark_mode: "sir"
+      embedding_model: "perceptiveshawty/compositional-bert-large-uncased"
+      checkpoint_path: "results/sir_transform_model.pt"
+      proj_dim: 1000
+    agents:
+      scriba_n_variants: 3
+    policy_learning:
+      generations: 5
+      n_eval_samples: 100
+      n_attack_samples: 100
+      max_tokens: 250
+
+  dipmark_matched_long:
+    # DiPmark re-run matched to the same settings, same reasoning as sir_matched_long.
+    model: *model_llama
+    watermarking:
+      theta_init: 2.0
+      delta: 2.0
+      gamma: 0.5
+      window: 5
+      secret_key: "PECCAVI-SECRET"
+      watermark_mode: "dipmark"
+    agents:
+      scriba_n_variants: 3
+    policy_learning:
+      generations: 5
+      n_eval_samples: 100
+      n_attack_samples: 100
+      max_tokens: 250
+
   synthid_baseline:
     # SynthID-Text (Dathathri et al., Nature 2024). Genuine tournament sampling
     # (binary elimination over 2^m i.i.d. samples, m=log2(tournament_k) layers).
