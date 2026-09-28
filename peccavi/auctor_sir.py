@@ -276,6 +276,18 @@ class SIRAuctor:
         scores = self._per_token_scores(text)
         return statistics.mean(scores) if scores else 0.0
 
+    # KGW/PECCAVI's z-tests elsewhere in this codebase divide by a *theoretical* null
+    # variance (sqrt(n*gamma*(1-gamma))) -- a fixed value that can't blow up regardless of
+    # sample luck. SIR has no equivalent closed-form null variance for P_W(t), so it divides
+    # by the sample's own empirical std instead. That's fine for a reasonably-sized token
+    # sample, but a short text can leave only a handful of tokens scored (chunk_length=10 +
+    # the 40-word minimum-context skip can leave a single ~5-8 token chunk for anything under
+    # ~50 words), and an empirical std estimated from that few points can land near zero by
+    # chance -- confirmed empirically: a normal, coherent 44-word sample produced z=1079.79
+    # (and z=4760.66 after a lexical attack) purely from this instability, not from any real
+    # signal. Flooring std_v caps how far a small-n draw can blow up the z-score.
+    _MIN_STD = 0.05
+
     def z_score(self, text: str) -> float:
         """
         One-sample z-test of the per-token watermark values against null mean 0
@@ -286,9 +298,7 @@ class SIRAuctor:
         if n < 2:
             return 0.0
         mean_v = statistics.mean(scores)
-        std_v = statistics.pstdev(scores)
-        if std_v == 0:
-            return 0.0
+        std_v = max(statistics.pstdev(scores), self._MIN_STD)
         return mean_v * math.sqrt(n) / std_v
 
     def detect(self, text: str, z_threshold: float = Z_DETECTION_THRESHOLD) -> dict:
