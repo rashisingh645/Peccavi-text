@@ -190,7 +190,7 @@ profiles:
       alpha_init: 0.3       # must stay in (0, 0.5]
       alpha_min: 0.05
       alpha_max: 0.49
-      window: 5             # context window for the permutation seed, matches dipmark_baseline
+      window: 1             # matches the paper's own experiments (texture key = most recent token only)
       adaptive_theta: true
     agents:
       scriba_n_variants: 10
@@ -217,7 +217,7 @@ profiles:
       alpha_init: 0.3
       alpha_min: 0.05
       alpha_max: 0.49
-      window: 5
+      window: 1
       adaptive_theta: true
     agents:
       scriba_n_variants: 3
@@ -340,7 +340,7 @@ profiles:
       watermark_mode: "sir"
       embedding_model: "perceptiveshawty/compositional-bert-large-uncased"
       checkpoint_path: "results/sir_transform_model.pt"
-      proj_dim: 1000
+      proj_dim: 300
     agents:
       scriba_n_variants: 10
     policy_learning:
@@ -355,7 +355,7 @@ profiles:
       delta: 2.0
       embedding_model: "perceptiveshawty/compositional-bert-large-uncased"
       checkpoint_path: "results/sir_transform_model.pt"
-      proj_dim: 1000
+      proj_dim: 300
     policy_learning:
       generations: 0
       n_eval_samples: 200
@@ -367,7 +367,7 @@ profiles:
     watermarking:
       delta: 2.0
       gamma: 0.5
-      window: 5
+      window: 1
       secret_key: "PECCAVI-SECRET"
       watermark_mode: "dipmark"
     agents:
@@ -390,7 +390,7 @@ profiles:
       watermark_mode: "sir"
       embedding_model: "perceptiveshawty/compositional-bert-large-uncased"
       checkpoint_path: "results/sir_transform_model.pt"
-      proj_dim: 1000
+      proj_dim: 300
     agents:
       scriba_n_variants: 3
     policy_learning:
@@ -406,7 +406,7 @@ profiles:
       theta_init: 2.0
       delta: 2.0
       gamma: 0.5
-      window: 5
+      window: 1
       secret_key: "PECCAVI-SECRET"
       watermark_mode: "dipmark"
     agents:
@@ -415,6 +415,30 @@ profiles:
       generations: 5
       n_eval_samples: 100
       n_attack_samples: 100
+      max_tokens: 250
+
+  sir_diagnostic:
+    # Small-scale SIR run to diagnose the below-chance AUC (0.461) seen in
+    # sir_matched_long -- reuses the already-trained results/sir_transform_model.pt
+    # checkpoint (no retraining), just at a tiny n_eval/n_attack so it finishes in
+    # minutes. Run with `python main.py --mode sir --profile sir_diagnostic
+    # --save-details --output results/sir_diagnostic.json` to get real generated
+    # text + per-token z-scores for inspection, since normal runs strip that detail.
+    model: *model_llama
+    watermarking:
+      theta_init: 2.0
+      delta: 2.0
+      secret_key: "PECCAVI-SECRET"
+      watermark_mode: "sir"
+      embedding_model: "perceptiveshawty/compositional-bert-large-uncased"
+      checkpoint_path: "results/sir_transform_model.pt"
+      proj_dim: 300
+    agents:
+      scriba_n_variants: 3
+    policy_learning:
+      generations: 0
+      n_eval_samples: 15
+      n_attack_samples: 15
       max_tokens: 250
 
   synthid_baseline:
@@ -661,7 +685,6 @@ profiles:
       theta_init: 2.0
       tournament_k: 16
       score_function: "mean"
-      g_distribution: "uniform"
       secret_key: "PECCAVI-SECRET"
       watermark_mode: "synthid"
     policy_learning:
@@ -671,22 +694,36 @@ profiles:
       max_tokens: 250
 
   synthid_bayesian_tk4096_long:
-    # SynthID with the literature-corrected defaults (Bayesian Score, Bernoulli(0.5))
-    # AND a much higher tournament_k than the codebase's old default of 16 (m=4 layers).
-    # The paper's own headline setting is m=30 layers (tournament_k=2^30), which is
-    # computationally intractable for this implementation's per-token candidate-sampling
-    # approach (see MAX_PRACTICAL_TOURNAMENT_K in auctor_synthid.py); tournament_k=4096
-    # (m=12 layers) is a tractable middle ground, still 3x deeper than the earlier
-    # peccavi_rs40_tk_full exploration's m used for PECCAVI's own Auctor, and — because
-    # Bayesian Score's TPR is monotonically non-decreasing in layer count (unlike Mean
-    # Score's unimodal TPR) — should not backfire the way naively raising layers under
-    # Mean Score would.
+    # SynthID with the literature-corrected defaults (Bayesian Score, real algorithm)
+    # at 12 tournament layers (tournament_k=4096 -> depth=round(log2(4096))=12), a
+    # midpoint between the old default (16 -> depth=4) and the paper's own headline
+    # setting of 30 layers (see synthid_bayesian_real30_long below -- now cheap to run
+    # since the rewritten algorithm scales linearly with depth, not 2^depth).
     model: *model_llama
     watermarking:
       theta_init: 2.0
       tournament_k: 4096
       score_function: "bayesian"
-      g_distribution: "bernoulli"
+      secret_key: "PECCAVI-SECRET"
+      watermark_mode: "synthid"
+    policy_learning:
+      generations: 5
+      n_eval_samples: 100
+      n_attack_samples: 100
+      max_tokens: 250
+
+  synthid_bayesian_real30_long:
+    # The paper's own actual headline configuration: 30 tournament layers, Bayesian
+    # Score. tournament_k=2^30 gives depth=round(log2(2^30))=30 exactly. Under the OLD
+    # (pre-rewrite) draw-2^m-candidates implementation this was computationally
+    # intractable; the rewritten algorithm (real top-k + multiplicative reweight, see
+    # auctor_synthid.py's module docstring) scales linearly with depth, so this is now
+    # just as cheap per-token as tournament_k=16.
+    model: *model_llama
+    watermarking:
+      theta_init: 2.0
+      tournament_k: 1073741824
+      score_function: "bayesian"
       secret_key: "PECCAVI-SECRET"
       watermark_mode: "synthid"
     policy_learning:

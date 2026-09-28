@@ -224,11 +224,13 @@ def mode_sir(backbone, cfg, args):
             "embedding_model", "perceptiveshawty/compositional-bert-large-uncased"
         ),
         sir_checkpoint_path=wm_cfg.get("checkpoint_path", "results/sir_transform_model.pt"),
-        sir_proj_dim=wm_cfg.get("proj_dim", 1000),
+        sir_proj_dim=wm_cfg.get("proj_dim", 300),
+        sir_chunk_length=wm_cfg.get("chunk_length", 10),
         sir_embed_device=wm_cfg.get("embed_device", "cuda" if torch.cuda.is_available() else "cpu"),
         n_attack_samples=pl_cfg.get("n_attack_samples", 100),
         max_tokens=pl_cfg.get("max_tokens", 100),
         seed=seed,
+        save_details=getattr(args, "save_details", False),
     )
 
     output_path = getattr(args, "output", "./results/sir_baseline.json")
@@ -301,7 +303,6 @@ def mode_synthid(backbone, cfg, args):
         watermark_mode="synthid",
         synthid_tournament_k=wm_cfg.get("tournament_k", 16),
         synthid_score_function=wm_cfg.get("score_function", "bayesian"),
-        synthid_g_distribution=wm_cfg.get("g_distribution", "bernoulli"),
         n_attack_samples=pl_cfg.get("n_attack_samples", 100),
         max_tokens=pl_cfg.get("max_tokens", 100),
         seed=seed,
@@ -434,6 +435,10 @@ def build_parser() -> argparse.ArgumentParser:
                    help=f"Path to the consolidated experiments YAML (default: {DEFAULT_CONFIG_FILE})")
     p.add_argument("--seed", type=int, default=42,
                    help="Random seed for reproducibility")
+    p.add_argument("--save-details", action="store_true",
+                   help="Include raw eval/attack sample texts and z-scores in the output "
+                        "JSON (normally stripped) -- for diagnosing a specific baseline's "
+                        "detector, not for regular runs (bloats the output file).")
     return p
 
 

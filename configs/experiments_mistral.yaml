@@ -124,7 +124,7 @@ profiles:
       delta: 2.0
       embedding_model: "perceptiveshawty/compositional-bert-large-uncased"
       checkpoint_path: "results/sir_transform_model.pt"
-      proj_dim: 1000
+      proj_dim: 300
     policy_learning:
       generations: 20
       n_eval_samples: 500

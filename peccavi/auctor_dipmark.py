@@ -6,12 +6,15 @@ Baseline: DiPmark (Wu, Hu, Guo, Zhang, Huang, ICML 2024) —
 This implements the paper's actual distribution-preserving reweight function, not a
 KGW-style additive logit bias. At each generation step:
   1. Derive a context-seeded random permutation of the vocabulary from the last `window`
-     token IDs (the "cipher").
+     token IDs (the "cipher") — the paper's own experiments use window=1 (texture key =
+     just the most recent token), which is this class's default.
   2. Order the LM's next-token distribution by that permutation and take its CDF.
-  3. Warp the CDF through F_alpha(v) = max(v-alpha, 0) + max(v-(1-alpha), 0), which zeroes
-     probability mass whose cumulative position falls below alpha, leaves the middle band
-     unchanged, and doubles mass above (1-alpha). alpha=0.5 collapses the middle band and
-     recovers a pure green(x2)/red(x0) split (the paper's "gamma-reweight" special case).
+  3. Warp the CDF through DiP-reweight (paper Definition 4.2): a WEIGHTED convex
+     combination PW(ti) = (1-alpha)*P^alpha_W(ti) + alpha*P^{1-alpha}_W(ti), where each
+     P^a_W term uses the single-clamp F_a(v) = max(v-a, 0) (paper Definition 4.1) — not an
+     unweighted sum of the two clamped terms, which was this file's original (wrong, though
+     numerically identical only at alpha=0.5) implementation. alpha=0.5 collapses to a pure
+     green(x2)/red(x0) split (the paper's "gamma-reweight" special case).
   4. Sample the winning token from the reweighted distribution.
 
 Marginalising over the random permutation, each token's reweighted probability equals its
@@ -48,17 +51,28 @@ def _permutation(vocab_size: int, seed: int) -> np.ndarray:
 
 
 def _f_alpha(v: torch.Tensor, alpha: float) -> torch.Tensor:
-    """F_alpha(v) = max(v-alpha, 0) + max(v-(1-alpha), 0)."""
-    return torch.clamp(v - alpha, min=0.0) + torch.clamp(v - (1.0 - alpha), min=0.0)
+    """The paper's Definition 4.1 F_alpha(v) = max(v-alpha, 0) -- a single clamped term.
+    (Previously this summed the alpha and (1-alpha) clamped terms together, which is NOT
+    what the paper defines -- see _alpha_reweight for the actual combination.)"""
+    return torch.clamp(v - alpha, min=0.0)
 
 
 def _alpha_reweight(probs: torch.Tensor, perm: np.ndarray, alpha: float) -> torch.Tensor:
-    """DiPmark's distribution-preserving reweight, vectorised over the full vocab."""
+    """
+    DiPmark's DiP-reweight (paper Definition 4.2): a WEIGHTED convex combination of the
+    alpha-reweight and (1-alpha)-reweight, PW(ti) = (1-alpha)*P^alpha_W(ti) + alpha*P^{1-alpha}_W(ti),
+    where P^alpha_W(ti) = F_alpha(cum_high) - F_alpha(cum_low). Previously this computed an
+    unweighted SUM of the two reweights instead -- mathematically identical to the correct
+    formula only at alpha=0.5 (where 1-alpha=alpha, so both collapse to the same 0.5-0.5
+    weighting), silently wrong for any other alpha.
+    """
     perm_t = torch.as_tensor(perm, dtype=torch.long, device=probs.device)
     p_perm = probs[perm_t]
     cum_high = torch.cumsum(p_perm, dim=0)
     cum_low = cum_high - p_perm
-    new_p_perm = _f_alpha(cum_high, alpha) - _f_alpha(cum_low, alpha)
+    p_alpha = _f_alpha(cum_high, alpha) - _f_alpha(cum_low, alpha)
+    p_1_minus_alpha = _f_alpha(cum_high, 1.0 - alpha) - _f_alpha(cum_low, 1.0 - alpha)
+    new_p_perm = (1.0 - alpha) * p_alpha + alpha * p_1_minus_alpha
     new_probs = torch.zeros_like(probs)
     new_probs[perm_t] = new_p_perm
     return new_probs
@@ -110,7 +124,7 @@ class DiPMarkAuctor:
     """DiPmark watermarked generation using the paper's actual reweighting mechanism."""
 
     def __init__(self, backbone: LLaMABackbone, delta: float = 2.0,
-                 gamma: float = 0.5, window: int = 5,
+                 gamma: float = 0.5, window: int = 1,
                  secret_key: str = SECRET_KEY):
         self.backbone = backbone
         self.alpha = min(max(gamma, 1e-3), 0.5)

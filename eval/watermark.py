@@ -62,14 +62,14 @@ def run_peccavi(
     sir_delta: float = 2.0,
     sir_embedding_model: str = "perceptiveshawty/compositional-bert-large-uncased",
     sir_checkpoint_path: str = "results/sir_transform_model.pt",
-    sir_proj_dim: int = 1000,
+    sir_proj_dim: int = 300,
+    sir_chunk_length: int = 10,
     sir_embed_device: str = "cpu",
     dipmark_delta: float = 2.0,
     dipmark_gamma: float = 0.5,
     dipmark_window: int = 5,
     synthid_tournament_k: int = 16,
     synthid_score_function: str = "bayesian",
-    synthid_g_distribution: str = "bernoulli",
     lam: float = 0.6,
     nu: float = 0.4,
     mu_ppl: float = 0.0,
@@ -83,6 +83,7 @@ def run_peccavi(
     n_attack_samples: int = 100,
     attack_mix: bool = False,
     max_tokens: int = 100,
+    save_details: bool = False,
 ) -> Dict:
     _set_seed(seed)
 
@@ -108,7 +109,7 @@ def run_peccavi(
         generator = SIRAuctor(
             backbone, delta=sir_delta, embedding_model=sir_embedding_model,
             checkpoint_path=sir_checkpoint_path, proj_dim=sir_proj_dim,
-            embed_device=sir_embed_device,
+            chunk_length=sir_chunk_length, embed_device=sir_embed_device,
         )
         magister = None
     elif watermark_mode == "dipmark":
@@ -118,8 +119,7 @@ def run_peccavi(
     elif watermark_mode == "synthid":
         generator = SynthIDAuctor(backbone, theta=theta_init,
                                   tournament_k=synthid_tournament_k,
-                                  score_function=synthid_score_function,
-                                  g_distribution=synthid_g_distribution)
+                                  score_function=synthid_score_function)
         magister = None
     elif watermark_mode == "peccavi_df":
         # Distortion-free PECCAVI: DiPmark's provably distribution-preserving reweight
@@ -307,6 +307,14 @@ def run_peccavi(
     labels = [0] * n_eval_samples + [1] * n_eval_samples
     auc = roc_auc_score(labels, z_scores_all)
 
+    eval_samples_diag = []
+    if save_details:
+        wm_z_eval = z_scores_all[n_eval_samples:]
+        eval_samples_diag = [
+            {"baseline_text": bt, "baseline_z": round(bz, 4), "wm_text": wt, "wm_z": round(wz, 4)}
+            for bt, bz, wt, wz in zip(baseline_texts, baseline_z, wm_texts_eval, wm_z_eval)
+        ]
+
     # TPR @ 1% FPR — standard detection metric for watermarking papers
     fpr_curve, tpr_curve, _ = roc_curve(labels, z_scores_all)
     tpr_at_1fpr = float(np.interp(0.01, fpr_curve, tpr_curve))
@@ -347,13 +355,19 @@ def run_peccavi(
     attack_auc: Dict[str, float] = {}
     attack_tpr_at_1fpr: Dict[str, float] = {}
     sample_attack = min(n_attack_samples, n_eval_samples)
+    attack_samples_diag: Dict[str, List[Dict]] = {}
     for attack_idx, attack_name in enumerate(attack_names):
         z_list = []
+        diag_list = []
         for wm_text in wm_texts_eval[:sample_attack]:
             attacked = _attack_techniques[attack_idx](wm_text)
             z_val = (generator.z_score(attacked) if use_generator_z
                      else custos.z_score(attacked))
             z_list.append(z_val)
+            if save_details:
+                diag_list.append({"wm_text": wm_text, "attacked_text": attacked, "z": round(z_val, 4)})
+        if save_details:
+            attack_samples_diag[attack_name] = diag_list
         attack_z_scores[attack_name] = [round(z, 4) for z in z_list]
         survival = sum(1 for z in z_list if z >= z_threshold) / max(len(z_list), 1)
         attack_survival[attack_name] = round(survival, 4)
@@ -459,6 +473,8 @@ def run_peccavi(
         "attack_auc": attack_auc,
         "attack_tpr_at_1fpr": attack_tpr_at_1fpr,
         "n_attack_samples": sample_attack,
+        "eval_samples_diag": eval_samples_diag,
+        "attack_samples_diag": attack_samples_diag,
         "adaptive_theta": adaptive_theta,
         "w_final": magister.w.tolist() if (magister and adaptive_theta) else None,
         "w_feature_names": ["token_entropy", "length_norm", "vocab_diversity", "avg_token_len_norm"],

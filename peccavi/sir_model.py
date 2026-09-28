@@ -81,9 +81,12 @@ class TransformModel(nn.Module):
     The paper's watermark model T: 4 fully-connected layers, ReLU, residual connections
     around the two middle layers. Maps a semantic embedding to a `proj_dim`-length raw
     watermark vector (pre-tanh); the caller applies tanh(k2 * raw) to bound it to (-1, 1).
+    output_dim=300 matches the reference repo (github.com/THU-BPM/Robust_Watermark)'s
+    actual TransformModel/generate_mappings.py default -- an earlier version of this file
+    used 1000, an unrelated guess made before the repo's actual defaults were checked.
     """
 
-    def __init__(self, input_dim: int = 1024, hidden_dim: int = 512, output_dim: int = 1000):
+    def __init__(self, input_dim: int = 1024, hidden_dim: int = 512, output_dim: int = 300):
         super().__init__()
         self.l1 = nn.Linear(input_dim, hidden_dim)
         self.l2 = nn.Linear(hidden_dim, hidden_dim)
@@ -98,37 +101,78 @@ class TransformModel(nn.Module):
         return self.l4(h3)
 
 
-def similarity_loss(raw_out: torch.Tensor, embeddings: torch.Tensor, k1: float = 1.0) -> torch.Tensor:
+def _pairwise_cosine_similarity(x: torch.Tensor, y: torch.Tensor) -> torch.Tensor:
+    dot = (x * y).sum(dim=-1)
+    return dot / (x.norm(p=2, dim=-1) * y.norm(p=2, dim=-1))
+
+
+def median_pairwise_cosine(embeddings: torch.Tensor) -> float:
     """
-    Pulls cosine-similarity of watermark outputs T(e_i), T(e_j) toward tanh(k1 * cosine
-    similarity of the underlying embeddings e_i, e_j) for every pair in the batch. This is
+    The reference repo's get_median_value_of_similarity: the median of the full all-pairs
+    cosine-similarity matrix over the training embeddings, computed once up front and used
+    to re-center the similarity target below. BERT-family sentence embeddings don't cluster
+    around cosine similarity 0 (their own runs reported ~0.4), so without this centering the
+    tanh target saturates almost everywhere in one direction and the network never learns a
+    useful signal -- confirmed as a real gap versus an earlier version of this loss that
+    applied tanh(k1 * raw_similarity) directly, with no centering.
+    """
+    normed = F.normalize(embeddings, dim=-1)
+    sim = normed @ normed.T
+    return float(torch.median(sim))
+
+
+def similarity_loss(raw_out_a: torch.Tensor, raw_out_b: torch.Tensor,
+                     emb_a: torch.Tensor, emb_b: torch.Tensor,
+                     median_value: float, k1: float = 20.0) -> torch.Tensor:
+    """
+    Pulls cosine-similarity of watermark outputs T(e_a), T(e_b) toward
+    tanh(k1 * (cosine_similarity(e_a, e_b) - median_value)) for each paired example in the
+    batch -- matching the reference repo's loss_fn exactly (input_a/input_b are two
+    independently-shuffled batches, paired element-wise, not an all-pairs matrix). This is
     what gives the watermark its semantic-invariance property: paraphrases with similar
     meaning get correlated (not identical, but detectably aligned) watermark vectors.
     """
-    t_norm = F.normalize(raw_out, dim=-1)
-    e_norm = F.normalize(embeddings, dim=-1)
-    sim_out = t_norm @ t_norm.T
-    sim_emb = e_norm @ e_norm.T
-    target = torch.tanh(k1 * sim_emb)
-    return (sim_out - target).abs().mean()
+    input_sim = _pairwise_cosine_similarity(emb_a, emb_b)
+    target = torch.tanh(k1 * (input_sim - median_value))
+    output_sim = _pairwise_cosine_similarity(raw_out_a, raw_out_b)
+    return (target - output_sim).abs().mean()
 
 
-def normalization_loss(raw_out: torch.Tensor, R: float = 1.0, lam1: float = 1.0) -> torch.Tensor:
+def _row_col_mean_penalty(raw_out: torch.Tensor) -> torch.Tensor:
+    """Reference repo's row_col_mean_penalty: squared per-example mean (row) plus squared
+    per-dimension mean (col), summed over the batch -- keeps T's output zero-mean along
+    both axes so an unwatermarked text's expected score is 0 (the paper's null hypothesis)."""
+    row = raw_out.mean(dim=1).pow(2).sum()
+    col = raw_out.mean(dim=0).pow(2).sum()
+    return row + col
+
+
+def _range_penalty(raw_out: torch.Tensor, floor: float = 0.05) -> torch.Tensor:
+    """Reference repo's abs_value_penalty: a one-sided push away from zero for entries
+    still inside (-floor, floor), masked so already-saturated entries contribute nothing --
+    unlike a two-sided pull toward a fixed magnitude, this only nudges near-zero (i.e.
+    under-watermarked) outputs outward, leaving confidently-saturated ones alone."""
+    deficit = F.relu(floor - raw_out.abs())
+    mask = (deficit > 0).float()
+    denom = torch.clamp(mask.sum(), min=1.0)
+    return (deficit * mask).sum() / denom
+
+
+def sir_loss(raw_out_a: torch.Tensor, raw_out_b: torch.Tensor,
+             emb_a: torch.Tensor, emb_b: torch.Tensor, median_value: float,
+             k1: float = 20.0, lam1: float = 0.1, lam2: float = 1.0) -> torch.Tensor:
     """
-    Keeps T's raw output zero-mean per example and per output dimension (so an
-    unwatermarked text's expected score is 0, matching the paper's null hypothesis),
-    plus an anti-collapse term pulling |raw_out| toward a target magnitude R so the
-    network can't trivially satisfy the balance terms by outputting all zeros.
+    Matches the reference repo's loss_fn total: original_loss + lambda1*mean_penalty +
+    lambda2*range_penalty, with lam1/lam2 defaults taken directly from their hardcoded
+    loss_fn(..., lambda1=0.1, lambda2=1, ...) values (train_watermark_model.py never
+    overrides them from the CLI). An earlier version of this module used lam1=10, lam2=0.1
+    based on a reading of the paper's prose in Section 4.3 -- since those values conflict
+    with the actual repo's code, the code's own operative defaults take precedence here.
     """
-    per_example_balance = raw_out.sum(dim=1).abs().mean()
-    per_dim_balance = raw_out.sum(dim=0).abs().mean()
-    anti_collapse = lam1 * (R - raw_out.abs()).abs().mean()
-    return per_example_balance + per_dim_balance + anti_collapse
-
-
-def sir_loss(raw_out: torch.Tensor, embeddings: torch.Tensor,
-             k1: float = 1.0, R: float = 1.0, lam1: float = 1.0, lam2: float = 1.0) -> torch.Tensor:
-    return similarity_loss(raw_out, embeddings, k1) + lam2 * normalization_loss(raw_out, R, lam1)
+    sim_loss = similarity_loss(raw_out_a, raw_out_b, emb_a, emb_b, median_value, k1)
+    mean_penalty = _row_col_mean_penalty(raw_out_a) + _row_col_mean_penalty(raw_out_b)
+    range_penalty = _range_penalty(raw_out_a) + _range_penalty(raw_out_b)
+    return sim_loss + lam1 * mean_penalty + lam2 * range_penalty
 
 
 def vocab_mapping(vocab_size: int, proj_dim: int, seed: int) -> np.ndarray:
@@ -140,68 +184,88 @@ def vocab_mapping(vocab_size: int, proj_dim: int, seed: int) -> np.ndarray:
 def train_transform_model(
     corpus_path: str = "datasets/arxiv_5000.csv",
     text_column: str = "experiment",
+    texts: List[str] | None = None,
     checkpoint_path: str = "results/sir_transform_model.pt",
     embedding_model: str = DEFAULT_EMBEDDING_MODEL,
-    proj_dim: int = 1000,
+    proj_dim: int = 300,
     hidden_dim: int = 512,
-    k1: float = 1.0,
-    k2: float = 1.0,
-    R: float = 1.0,
-    lam1: float = 1.0,
+    # k1/k2 confirmed against the reference repo's actual hardcoded constants: k1=20 is the
+    # "20" inside train_watermark_model.py's loss_fn's tanh(20*(sim - median)); k2=1000 is
+    # the "1000" inside watermark.py's scale_vector's tanh(1000*v_minus_mean) (applied at
+    # generation/detection time, not here). lam1/lam2 and the optimizer/schedule below now
+    # match train_watermark_model.py's own defaults exactly (lambda1=0.1, lambda2=1 in its
+    # loss_fn; SGD lr=0.006, weight_decay=0.2, StepLR(step_size=200, gamma=0.1), epochs=2000)
+    # -- superseding an earlier version of this file that used lam1=10, lam2=0.1, Adam,
+    # lr=1e-5, epochs=200 based on a reading of the paper's prose (Section 4.3), which
+    # conflicts with the repo's own code on these particular values.
+    k1: float = 20.0,
+    k2: float = 1000.0,
+    lam1: float = 0.1,
     lam2: float = 1.0,
     batch_size: int = 32,
-    epochs: int = 20,
-    lr: float = 1e-3,
+    epochs: int = 2000,
+    lr: float = 0.006,
+    weight_decay: float = 0.2,
+    lr_step_size: int = 200,
+    lr_gamma: float = 0.1,
     max_examples: int = 2000,
     seed: int = 42,
     device: str = "cpu",
 ) -> TransformModel:
     """
-    Trains T on this codebase's existing datasets/arxiv_5000.csv corpus, mirroring the
-    official repo's two-step generate_embeddings.py + train_watermark_model.py pipeline
-    but folded into one lazy call. Embeddings are computed once per run; the MLP itself
-    trains fast (small network, in-memory vectors). Not the paper's original checkpoint
-    or exact training corpus — a faithful reproduction of the described objective on
-    locally available text.
+    Trains T, mirroring the official repo's two-step generate_embeddings.py +
+    train_watermark_model.py pipeline but folded into one lazy call. Embeddings are
+    computed once per run; the MLP itself trains fast (small network, in-memory
+    vectors). Pass `texts` directly to train on a specific corpus (e.g. Praeco's
+    stratified multi-domain prompt pool, matching what SIRAuctor actually does);
+    otherwise falls back to reading `corpus_path`'s single CSV. Not the paper's
+    original checkpoint or exact training corpus (they use WikiText-103) — a
+    faithful reproduction of the described training objective on available text.
     """
-    import csv
-
-    texts: List[str] = []
-    with open(corpus_path, newline="", encoding="utf-8") as f:
-        for row in csv.DictReader(f):
-            text = (row.get(text_column) or "").strip()
-            if text:
-                texts.append(text)
+    if texts is None:
+        import csv
+        texts = []
+        with open(corpus_path, newline="", encoding="utf-8") as f:
+            for row in csv.DictReader(f):
+                text = (row.get(text_column) or "").strip()
+                if text:
+                    texts.append(text)
     texts = texts[:max_examples]
-    if len(texts) < batch_size:
-        raise ValueError(f"Need at least {batch_size} training texts, got {len(texts)}")
+    if len(texts) < 2 * batch_size:
+        raise ValueError(f"Need at least {2 * batch_size} training texts (two paired batches), got {len(texts)}")
 
     embedder = CBertEmbedder(embedding_model, device=device)
     logger.info(f"SIR: embedding {len(texts)} training texts with {embedding_model} (one-time cost)...")
     embeddings = embedder.embed_batch(texts).to(device)  # [N, input_dim]
 
+    median_value = median_pairwise_cosine(embeddings)
+    logger.info(f"SIR: median pairwise cosine similarity of training embeddings = {median_value:.4f}")
+
     torch.manual_seed(seed)
     model = TransformModel(input_dim=embeddings.shape[1], hidden_dim=hidden_dim, output_dim=proj_dim).to(device)
-    opt = torch.optim.Adam(model.parameters(), lr=lr)
+    opt = torch.optim.SGD(model.parameters(), lr=lr, weight_decay=weight_decay)
+    scheduler = torch.optim.lr_scheduler.StepLR(opt, step_size=lr_step_size, gamma=lr_gamma)
 
     n = embeddings.shape[0]
+    n_pair_batches = n // (2 * batch_size)
     for epoch in range(epochs):
         perm = torch.randperm(n)
         total_loss = 0.0
         n_batches = 0
-        for start in range(0, n, batch_size):
-            idx = perm[start:start + batch_size]
-            if len(idx) < 2:
-                continue
-            batch_e = embeddings[idx]
-            raw_out = model(batch_e)
-            loss = sir_loss(raw_out, batch_e, k1=k1, R=R, lam1=lam1, lam2=lam2)
+        for b in range(n_pair_batches):
+            idx_a = perm[2 * b * batch_size:(2 * b + 1) * batch_size]
+            idx_b = perm[(2 * b + 1) * batch_size:(2 * b + 2) * batch_size]
+            emb_a, emb_b = embeddings[idx_a], embeddings[idx_b]
+            raw_a, raw_b = model(emb_a), model(emb_b)
+            loss = sir_loss(raw_a, raw_b, emb_a, emb_b, median_value, k1=k1, lam1=lam1, lam2=lam2)
             opt.zero_grad()
             loss.backward()
             opt.step()
             total_loss += loss.item()
             n_batches += 1
-        logger.info(f"SIR transform model epoch {epoch + 1}/{epochs} loss={total_loss / max(n_batches, 1):.4f}")
+        scheduler.step()
+        if (epoch + 1) % 50 == 0 or epoch == epochs - 1:
+            logger.info(f"SIR transform model epoch {epoch + 1}/{epochs} loss={total_loss / max(n_batches, 1):.4f}")
 
     os.makedirs(os.path.dirname(checkpoint_path) or ".", exist_ok=True)
     torch.save({
@@ -230,6 +294,11 @@ def load_or_train_transform_model(
         model.eval()
         return model, float(ckpt.get("k2", 1.0))
 
-    k2 = train_kwargs.pop("k2", 1.0)
+    # Must match train_transform_model's own k2 default (1000.0, the paper's saturating
+    # value) -- an earlier version of this default (1.0) silently overrode that every time
+    # this function trained a fresh model without an explicit k2 kwarg (SIRAuctor's actual
+    # call path), reintroducing the exact unsaturated-signal problem that default was
+    # supposed to fix.
+    k2 = train_kwargs.pop("k2", 1000.0)
     model = train_transform_model(checkpoint_path=checkpoint_path, device=device, k2=k2, **train_kwargs)
     return model, float(k2)
