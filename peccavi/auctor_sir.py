@@ -133,13 +133,27 @@ class SIRAuctor:
         # re-randomizing mechanism structurally can't get stuck in (confirmed empirically:
         # degenerate repetition collapse observed in ~1/15 samples of a diagnostic run,
         # corrupting both AUC and attack-survival with extreme non-representative outliers).
-        # If the last few tokens have already collapsed into a tight repeat, break the loop
-        # by sampling from the plain (unwatermarked) distribution for this one step, rather
-        # than continuing to apply a bias that's actively reinforcing the collapse.
-        # Calibrated against synthetic 2/3/4-token repeat cycles (all correctly flagged)
-        # and normal/mildly-repetitive/natural-word-reuse token sequences (none flagged).
-        _repeat_window = 10
-        _repeat_max_distinct = 4  # last _repeat_window tokens drawn from <= this many distinct ids -> stuck
+        #
+        # The reference implementation (github.com/THU-BPM/MarkLLM, watermark/sir/sir.py)
+        # doesn't hand-roll a sampling loop at all -- it drives HF's model.generate() with
+        # no_repeat_ngram_size=4 (see every example in their README/test_method.py/
+        # test_pipeline.py). That's a *structural* decoding constraint: a token is banned
+        # outright if picking it would complete a 4-gram already seen earlier in the
+        # sequence, so the collapse can't happen in the first place. Since our loop applies
+        # a per-step watermark bias (which model.generate()'s logits_processor hook can't
+        # easily be combined with here), we replicate that exact constraint manually rather
+        # than the coarser "detect gibberish after the fact" heuristic tried earlier.
+        _no_repeat_ngram_size = 4
+
+        def _banned_next_tokens(seq: List[int]) -> set:
+            if len(seq) < _no_repeat_ngram_size:
+                return set()
+            prefix = tuple(seq[-(_no_repeat_ngram_size - 1):])
+            banned = set()
+            for i in range(len(seq) - _no_repeat_ngram_size + 1):
+                if tuple(seq[i:i + _no_repeat_ngram_size - 1]) == prefix:
+                    banned.add(seq[i + _no_repeat_ngram_size - 1])
+            return banned
 
         for _ in range(max_tokens):
             context_ids = prompt_ids + generated_ids
@@ -155,16 +169,13 @@ class SIRAuctor:
 
             logits = torch.nan_to_num(logits, nan=0.0, posinf=1e4, neginf=-1e4)
 
-            recent = generated_ids[-_repeat_window:]
-            is_degenerate = (
-                len(recent) >= _repeat_window
-                and len(set(recent)) <= _repeat_max_distinct
-            )
-            if is_degenerate:
-                target_logits = logits
-            else:
-                p_w = self._watermark_vector(context_text, vocab_size).to(logits.device)
-                target_logits = logits + self.delta * p_w
+            p_w = self._watermark_vector(context_text, vocab_size).to(logits.device)
+            target_logits = logits + self.delta * p_w
+
+            banned = _banned_next_tokens(context_ids)
+            if banned:
+                target_logits = target_logits.clone()
+                target_logits[list(banned)] = float("-inf")
 
             probs = torch.softmax(target_logits, dim=0).clamp(min=0.0)
             prob_sum = probs.sum()
