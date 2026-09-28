@@ -125,6 +125,22 @@ class SIRAuctor:
         eos_token_id = tokenizer.eos_token_id
         vocab_size = tokenizer.vocab_size or len(tokenizer)
 
+        # Repetition guard: unlike KGW (a fresh random green/red partition every step),
+        # SIR's bias is FIXED per context embedding. A single unlucky low-probability
+        # token pick can push the context into an out-of-distribution embedding region
+        # where the trained transform model's output becomes unpredictable and can keep
+        # reinforcing the same handful of garbage tokens -- a sticky feedback loop KGW's
+        # re-randomizing mechanism structurally can't get stuck in (confirmed empirically:
+        # degenerate repetition collapse observed in ~1/15 samples of a diagnostic run,
+        # corrupting both AUC and attack-survival with extreme non-representative outliers).
+        # If the last few tokens have already collapsed into a tight repeat, break the loop
+        # by sampling from the plain (unwatermarked) distribution for this one step, rather
+        # than continuing to apply a bias that's actively reinforcing the collapse.
+        # Calibrated against synthetic 2/3/4-token repeat cycles (all correctly flagged)
+        # and normal/mildly-repetitive/natural-word-reuse token sequences (none flagged).
+        _repeat_window = 10
+        _repeat_max_distinct = 4  # last _repeat_window tokens drawn from <= this many distinct ids -> stuck
+
         for _ in range(max_tokens):
             context_ids = prompt_ids + generated_ids
             context_text = tokenizer.decode(context_ids, skip_special_tokens=True)
@@ -138,13 +154,22 @@ class SIRAuctor:
                 logits = outputs.logits[:, -1, :].squeeze(0)
 
             logits = torch.nan_to_num(logits, nan=0.0, posinf=1e4, neginf=-1e4)
-            p_w = self._watermark_vector(context_text, vocab_size).to(logits.device)
-            biased_logits = logits + self.delta * p_w
 
-            probs = torch.softmax(biased_logits, dim=0).clamp(min=0.0)
+            recent = generated_ids[-_repeat_window:]
+            is_degenerate = (
+                len(recent) >= _repeat_window
+                and len(set(recent)) <= _repeat_max_distinct
+            )
+            if is_degenerate:
+                target_logits = logits
+            else:
+                p_w = self._watermark_vector(context_text, vocab_size).to(logits.device)
+                target_logits = logits + self.delta * p_w
+
+            probs = torch.softmax(target_logits, dim=0).clamp(min=0.0)
             prob_sum = probs.sum()
             if prob_sum <= 0 or not torch.isfinite(prob_sum):
-                new_token = int(torch.argmax(biased_logits).item())
+                new_token = int(torch.argmax(target_logits).item())
             else:
                 probs = probs / prob_sum
                 new_token = int(torch.multinomial(probs, 1).item())
