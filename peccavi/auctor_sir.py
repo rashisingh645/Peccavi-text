@@ -7,7 +7,12 @@ Real SIR has nothing to do with token entropy or a KGW-style hash-seeded green l
 (an earlier version of this file mislabeled an entropy-gated KGW variant as "SIR" —
 that was a different, unrelated technique). The actual mechanism, from `sir_model.py`:
 
-  1. Embed the preceding text with Compositional-BERT -> e (1024-dim).
+  1. Split the running text into `chunk_length`-word chunks and embed only the complete
+     preceding chunks (not the whole running context, and not the still-forming last
+     chunk) with Compositional-BERT -> e (1024-dim). The bias is frozen while a chunk is
+     still being generated and only changes at chunk boundaries -- matching
+     github.com/THU-BPM/Robust_Watermark's WatermarkContext exactly, and deliberately not
+     the finer-grained "re-embed on every token" an earlier version of this file did.
   2. Pass e through a small trained network T -> a `proj_dim`-length watermark vector,
      tanh-bounded to (-1, 1), then expanded to the full vocabulary via a fixed random
      hash mapping (vocab_size -> proj_dim, feature-hashing trick).
@@ -44,11 +49,19 @@ class SIRAuctor:
     call-site compatibility with older configs — real SIR has neither parameter.
     """
 
+    # Reference repo's (github.com/THU-BPM/Robust_Watermark) detect()'s hardcoded minimum:
+    # a chunk's context is only scored once its accumulated word count reaches this many
+    # words, so early positions (a near-empty, uninformative context embedding) don't
+    # inject noise into the detection statistic. MarkLLM's toolkit reimplementation instead
+    # skips only until `chunk_length` words -- the original paper repo is more authoritative.
+    _MIN_CONTEXT_WORDS = 40
+
     def __init__(self, backbone: LLaMABackbone, delta: float = 2.0,
                  secret_key: str = SECRET_KEY,
                  embedding_model: str = DEFAULT_EMBEDDING_MODEL,
                  checkpoint_path: str = "results/sir_transform_model.pt",
-                 proj_dim: int = 1000,
+                 proj_dim: int = 300,
+                 chunk_length: int = 10,
                  embed_device: str = "cpu",
                  gamma: float = None, entropy_threshold: float = None):
         self.backbone = backbone
@@ -58,10 +71,35 @@ class SIRAuctor:
         self.embedder = CBertEmbedder(embedding_model, device=embed_device)
         self.checkpoint_path = checkpoint_path
         self.proj_dim = proj_dim
+        self.chunk_length = chunk_length
 
         self._transform_model = None
         self._k2 = 1.0
         self._mapping_t = None
+
+    @staticmethod
+    def _word_chunks(text: str, chunk_length: int) -> List[List[str]]:
+        """Reference repo's get_text_split: group words into chunks of `chunk_length`.
+        They use jieba (a Chinese word segmenter) which, on non-CJK text, degenerates to
+        roughly whitespace/punctuation splitting -- so plain word splitting is an equivalent
+        substitute for the English text this codebase generates, without adding a CJK
+        segmentation dependency for no benefit."""
+        words = text.split()
+        return [words[i:i + chunk_length] for i in range(0, len(words), chunk_length)]
+
+    def _frozen_context(self, text: str) -> str:
+        """Reference repo's get_context_sentence: use only *complete* preceding word
+        chunks as context, freezing the bias while the current (possibly incomplete) chunk
+        is still being formed. Recomputing the embedding/bias fresh on every single new
+        token (as an earlier version of this file did) makes the bias jump around far more
+        than the paper's actual mechanism -- a short sentence's embedding can shift
+        meaningfully with each added word, which is a plausible structural contributor to
+        the degenerate-generation collapse this file chases elsewhere."""
+        chunks = self._word_chunks(text, self.chunk_length)
+        if not chunks:
+            return ""
+        complete = chunks if len(chunks[-1]) == self.chunk_length else chunks[:-1]
+        return " ".join(w for c in complete for w in c)
 
     def _ensure_model(self):
         if self._transform_model is None:
@@ -95,10 +133,11 @@ class SIRAuctor:
         with torch.no_grad():
             raw = self._transform_model(e.unsqueeze(0)).squeeze(0)
             compressed = torch.tanh(self._k2 * raw)
-            # normalization_loss only balances the mean across the *training batch*, never
-            # any single example's own proj_dim-length vector -- so for any one context
-            # (especially one unlike the narrow training corpus), the raw output can carry a
-            # real, consistent non-zero mean. Confirmed empirically: baseline (unwatermarked)
+            # The training loss's mean-penalty terms only balance the mean across the
+            # *training batch*, never any single example's own proj_dim-length vector --
+            # so for any one context (especially one unlike the narrow training corpus),
+            # the raw output can carry a real, consistent non-zero mean. Confirmed
+            # empirically: baseline (unwatermarked)
             # text scored z~-10 to -15, just as negative as watermarked text, proving the
             # null calibration was broken, not that watermarking failed to embed. Re-centering
             # each individual vector to exactly zero-mean here fixes that without retraining.
@@ -155,6 +194,13 @@ class SIRAuctor:
                     banned.add(seq[i + _no_repeat_ngram_size - 1])
             return banned
 
+        # Watermark bias is only recomputed when the *frozen* (complete-chunks-only)
+        # context text changes -- matching the reference's chunk-boundary-gated bias
+        # exactly, and avoiding a wasted embed+transform-model call every single step
+        # while a chunk is still being formed.
+        cached_frozen_context = None
+        cached_bias = None
+
         for _ in range(max_tokens):
             context_ids = prompt_ids + generated_ids
             context_text = tokenizer.decode(context_ids, skip_special_tokens=True)
@@ -169,8 +215,11 @@ class SIRAuctor:
 
             logits = torch.nan_to_num(logits, nan=0.0, posinf=1e4, neginf=-1e4)
 
-            p_w = self._watermark_vector(context_text, vocab_size).to(logits.device)
-            target_logits = logits + self.delta * p_w
+            frozen_context = self._frozen_context(context_text)
+            if frozen_context != cached_frozen_context:
+                cached_bias = self._watermark_vector(frozen_context, vocab_size).to(logits.device)
+                cached_frozen_context = frozen_context
+            target_logits = logits + self.delta * cached_bias
 
             banned = _banned_next_tokens(context_ids)
             if banned:
@@ -196,17 +245,30 @@ class SIRAuctor:
     # ------------------------------------------------------------------ #
 
     def _per_token_scores(self, text: str) -> List[float]:
+        """
+        Matches the reference repo's detect(): score whole word-chunks at a time against
+        one context embedding per chunk (not a fresh embedding per token), and skip any
+        chunk whose accumulated context is under `_MIN_CONTEXT_WORDS` words -- an earlier
+        version of this method re-embedded and rescored from i=0 with no minimum-context
+        skip, which (per token) is both far more expensive (one embed+transform call per
+        token instead of per chunk) and noisier (an empty/near-empty context embedding is
+        not representative of what the transform model was trained on).
+        """
         require_local_tokenizer(self.backbone, "SIRAuctor scoring")
         tokenizer = self.backbone.tokenizer
-        token_ids = tokenizer.encode(text)
         vocab_size = tokenizer.vocab_size or len(tokenizer)
 
-        scores = []
-        for i, tid in enumerate(token_ids):
-            context_ids = token_ids[:i]
-            context_text = tokenizer.decode(context_ids, skip_special_tokens=True) if context_ids else ""
+        chunks = self._word_chunks(text, self.chunk_length)
+        scores: List[float] = []
+        for i in range(1, len(chunks)):
+            context_text = " ".join(w for c in chunks[:i] for w in c)
+            if len(context_text.split()) < self._MIN_CONTEXT_WORDS:
+                continue
+            current_text = " ".join(chunks[i])
             p_w = self._watermark_vector(context_text, vocab_size)
-            scores.append(float(p_w[tid].item()))
+            token_ids = tokenizer.encode(current_text, add_special_tokens=False)
+            for tid in token_ids:
+                scores.append(float(p_w[tid].item()))
         return scores
 
     def mean_score(self, text: str) -> float:

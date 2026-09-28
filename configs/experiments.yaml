@@ -340,7 +340,7 @@ profiles:
       watermark_mode: "sir"
       embedding_model: "perceptiveshawty/compositional-bert-large-uncased"
       checkpoint_path: "results/sir_transform_model.pt"
-      proj_dim: 1000
+      proj_dim: 300
     agents:
       scriba_n_variants: 10
     policy_learning:
@@ -355,7 +355,7 @@ profiles:
       delta: 2.0
       embedding_model: "perceptiveshawty/compositional-bert-large-uncased"
       checkpoint_path: "results/sir_transform_model.pt"
-      proj_dim: 1000
+      proj_dim: 300
     policy_learning:
       generations: 0
       n_eval_samples: 200
@@ -390,7 +390,7 @@ profiles:
       watermark_mode: "sir"
       embedding_model: "perceptiveshawty/compositional-bert-large-uncased"
       checkpoint_path: "results/sir_transform_model.pt"
-      proj_dim: 1000
+      proj_dim: 300
     agents:
       scriba_n_variants: 3
     policy_learning:
@@ -432,7 +432,7 @@ profiles:
       watermark_mode: "sir"
       embedding_model: "perceptiveshawty/compositional-bert-large-uncased"
       checkpoint_path: "results/sir_transform_model.pt"
-      proj_dim: 1000
+      proj_dim: 300
     agents:
       scriba_n_variants: 3
     policy_learning:
