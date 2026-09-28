@@ -225,6 +225,7 @@ def mode_sir(backbone, cfg, args):
         ),
         sir_checkpoint_path=wm_cfg.get("checkpoint_path", "results/sir_transform_model.pt"),
         sir_proj_dim=wm_cfg.get("proj_dim", 1000),
+        sir_embed_device=wm_cfg.get("embed_device", "cuda" if torch.cuda.is_available() else "cpu"),
         n_attack_samples=pl_cfg.get("n_attack_samples", 100),
         max_tokens=pl_cfg.get("max_tokens", 100),
         seed=seed,
