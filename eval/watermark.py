@@ -63,6 +63,7 @@ def run_peccavi(
     sir_embedding_model: str = "perceptiveshawty/compositional-bert-large-uncased",
     sir_checkpoint_path: str = "results/sir_transform_model.pt",
     sir_proj_dim: int = 1000,
+    sir_embed_device: str = "cpu",
     dipmark_delta: float = 2.0,
     dipmark_gamma: float = 0.5,
     dipmark_window: int = 5,
@@ -107,6 +108,7 @@ def run_peccavi(
         generator = SIRAuctor(
             backbone, delta=sir_delta, embedding_model=sir_embedding_model,
             checkpoint_path=sir_checkpoint_path, proj_dim=sir_proj_dim,
+            embed_device=sir_embed_device,
         )
         magister = None
     elif watermark_mode == "dipmark":
