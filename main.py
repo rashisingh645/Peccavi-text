@@ -302,7 +302,6 @@ def mode_synthid(backbone, cfg, args):
         watermark_mode="synthid",
         synthid_tournament_k=wm_cfg.get("tournament_k", 16),
         synthid_score_function=wm_cfg.get("score_function", "bayesian"),
-        synthid_g_distribution=wm_cfg.get("g_distribution", "bernoulli"),
         n_attack_samples=pl_cfg.get("n_attack_samples", 100),
         max_tokens=pl_cfg.get("max_tokens", 100),
         seed=seed,

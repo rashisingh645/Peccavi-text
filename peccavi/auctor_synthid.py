@@ -3,52 +3,41 @@ peccavi/auctor_synthid.py
 Baseline: SynthID-Text (Dathathri et al., Nature 2024, Google DeepMind) —
 "Scalable watermarking for identifying large language model outputs"
 
-This implements genuine Tournament Sampling: draw K = 2^m i.i.d. candidate tokens from the
-*full* LM distribution p_LM(.|context) (not a top-k logit-truncated, exponentially-tilted
-resample — that is PECCAVI's own biased mechanism and is a different algorithm). Run a
-single-elimination bracket over m layers; at each layer, every remaining pair of candidates
-is decided by an independent per-layer pseudorandom "g-value" keyed on (token, context,
-layer). The final survivor is the emitted token.
+Rewritten to match the ACTUAL published algorithm, verified directly against the
+official reference implementation (github.com/google-deepmind/synthid-text,
+src/synthid_text/logits_processing.py + hashing_function.py). The previous version
+of this file implemented "draw 2^m i.i.d. candidates, single-elimination bracket" —
+a real, self-consistent watermarking scheme, but NOT what SynthID-Text actually
+does, and it wrongly implied the paper's own default of 30 tournament layers was
+near-computationally-intractable (2^30 candidates). It isn't: the real algorithm
+never draws 2^m candidates at all.
 
-Because each candidate is drawn i.i.d. from the true p_LM and pairwise winners are decided
-by g-values independent of the LM's own probabilities, marginalising over the random g-value
-key recovers the original p_LM exactly for m=0 and stays close to it for m>0 — this is the
-paper's "non-distortionary" tournament sampling property. It is fundamentally different from
-KGW/SIR (additive delta bias) and from PECCAVI's Auctor (top-k truncation + exp(theta*(2g-1))
-logit tilt), both of which explicitly shift the sampling distribution.
+The real algorithm, at each generation step:
+  1. Take the top-k next-token logits (a normal top-k, not 2^m i.i.d. draws).
+  2. For each of the top-k candidates and each of `depth` (tournament layers),
+     compute a binary g-value (0 or 1) via 12 rounds of a fast hash accumulator
+     (an adapted linear congruential generator, not SHA256) seeded from the ngram
+     context, the candidate token, and a per-depth watermarking key.
+  3. Reweight the softmax probabilities across all `depth` layers via a
+     multiplicative update: probs *= (1 + g - g_mass), where g_mass is the total
+     probability mass currently on g=1 tokens at that layer. This is a cheap,
+     sequential reweighting pass over the SAME top-k distribution -- not a
+     bracket-elimination tournament over exponentially many draws -- which is why
+     30 layers is trivial for the real algorithm, not a scaling problem.
+  4. Sample once from the final reweighted distribution.
+  5. Skip watermarking at any position whose ngram context was already seen in
+     this generation (the paper's own explicit repeated-context handling, to avoid
+     a repeated low-entropy n-gram inflating the detection signal).
 
-g-value distribution and detection statistic (fixed to match the real paper — see
-Omidi, Dong & Wang, "On Google's SynthID-Text LLM Watermarking System: Theoretical Analysis
-and Empirical Validation", arXiv:2603.03410, which independently verifies both points below
-against SynthID-Text's actual reported configuration):
+`tournament_k` is kept as the config knob for continuity with existing profiles/
+results (tournament_k=16/64/4096/100000 map to depth=4/6/12/17, same mapping as
+before) -- but unlike the old candidate-drawing implementation, cost now scales
+linearly with depth x top_k, not 2^depth, so there's no practical ceiling anymore;
+MAX_PRACTICAL_TOURNAMENT_K is gone because it's no longer needed.
 
-  1. g-values default to Bernoulli(0.5), not a continuous Uniform(0,1) draw. The analysis
-     paper's Finding 3 proves Bernoulli(0.5) is the *optimal* g-value distribution for
-     detection; SynthID-Text's own headline numbers use it. Uniform(0,1) is kept as an
-     opt-in `g_distribution="uniform"` for ablation, since it's the paper's other analysed
-     case, but it is no longer the default.
-
-  2. Detection defaults to the Bayesian Score, not the Mean Score. The analysis paper proves
-     Mean Score's TPR@FPR is a *unimodal* function of the number of tournament layers (rises
-     then falls, exploitable via their "layer inflation attack"), whereas the Bayesian
-     Score's TPR is monotonically non-decreasing and saturates. SynthID-Text's own reported
-     headline result (TPR=85% vs SOTA 73% at FPR=1%, ELI5, Gemma-7B, 30 layers) uses the
-     Bayesian Score — Mean Score alone is not what the paper's numbers describe. The full
-     Bayesian Score requires a learned per-(token,layer) collision probability estimated from
-     labelled calibration data (the paper's C_hat); we use the paper's own closed-form
-     zero-collision limit (C_hat=0) instead, which needs no calibration set. At C_hat=0 and
-     Bernoulli(0.5), the paper's Theorem 15 reduces to P(g=1|watermarked)=0.75,
-     P(g=0|watermarked)=0.25 vs P(g|unwatermarked)=0.5, giving a closed-form per-sample
-     log-likelihood ratio. Mean Score is kept available via `score_function="mean"` for
-     direct ablation against Bayesian Score, since that comparison is itself a literature
-     finding worth reproducing.
-
-`theta` is accepted only for call-site compatibility — SynthID-Text has no learned/adaptive
-strength parameter; that is PECCAVI's contribution, not SynthID's. The signal-strength knobs
-are `tournament_k` (number of tournament layers m = log2(tournament_k); the paper's own
-headline setting is m=30, i.e. tournament_k=2^30, which is computationally intractable for
-this implementation's per-token candidate-sampling approach — see `MAX_PRACTICAL_TOURNAMENT_K`)
-and, now, `score_function`.
+g-values are always binary (0/1) in the real algorithm -- there is no continuous
+"Uniform(0,1)" variant, so the earlier g_distribution ablation option is removed;
+`score_function` ("bayesian" default, "mean" for ablation) is unchanged.
 """
 
 from __future__ import annotations
@@ -59,114 +48,157 @@ from backbone.model import LLaMABackbone, require_local_tokenizer
 from typing import List
 from peccavi.constants import SECRET_KEY, Z_DETECTION_THRESHOLD
 
-# 2^20 ~= 1.05M candidates/token is already a heavy `torch.multinomial` + Python-list-bracket
-# cost per generated token; 2^30 (the paper's own m=30) would need to draw and bracket over a
-# billion candidates per token and is not practically reachable this way. Configs asking for
-# more than this are clamped, with a warning, rather than silently hanging.
-MAX_PRACTICAL_TOURNAMENT_K = 2 ** 20
-
-# Closed-form Bayesian-score log-likelihood-ratio terms at the zero-collision limit (C_hat=0)
-# for Bernoulli(0.5) g-values (paper's Theorem 15): P(g=1|w)=0.75, P(g=0|w)=0.25, P(g|not-w)=0.5.
-_LLR_G1 = math.log(0.75 / 0.5)
-_LLR_G0 = math.log(0.25 / 0.5)
-# Per-sample null-hypothesis mean/variance of the LLR term, for the Bayesian-score z-test.
-_LLR_NULL_MEAN = 0.5 * _LLR_G1 + 0.5 * _LLR_G0
-_LLR_NULL_VAR = 0.5 * (_LLR_G1 - _LLR_NULL_MEAN) ** 2 + 0.5 * (_LLR_G0 - _LLR_NULL_MEAN) ** 2
+# Real SynthID-Text's hash accumulator: an adapted linear congruential generator
+# (newlib/musl parameters), f(x, data[:T]) = f(f(x, data[:T-1]), data[T]).
+_LCG_MULT = 6364136223846793005
+_LCG_INC = 1
+_MASK64 = (1 << 64) - 1
 
 
-def _synthid_seed(context_ids: List[int], secret_key: str = SECRET_KEY) -> int:
-    """Rolling 5-token context seed — same window convention as PECCAVI's Auctor."""
-    key_str = secret_key + "".join(str(x) for x in context_ids[-5:])
-    return int(hashlib.sha256(key_str.encode()).hexdigest()[:8], 16)
+def _accumulate_hash(current_hash: int, *data: int) -> int:
+    h = current_hash
+    for d in data:
+        h = (h + d) & _MASK64
+        h = (h * _LCG_MULT) & _MASK64
+        h = (h + _LCG_INC) & _MASK64
+    return h
 
 
-def _g_value(token_id: int, context_seed: int, layer: int, distribution: str = "bernoulli") -> float:
-    """g_l(token, r_t). Bernoulli(0.5) (paper-optimal default) or continuous Uniform(0,1)."""
-    h = hashlib.sha256(f"{context_seed}:{layer}:{token_id}".encode()).hexdigest()
-    u = int(h[:8], 16) / 0xFFFFFFFF
-    if distribution == "uniform":
-        return u
-    return 1.0 if u >= 0.5 else 0.0
+def _signed64(x: int) -> int:
+    """Reinterpret a 64-bit unsigned value as signed two's-complement -- needed
+    because the reference implementation's `>>` operates on signed int64 tensors
+    (arithmetic/sign-extending shift), not an unsigned logical shift."""
+    x &= _MASK64
+    return x - (1 << 64) if x & (1 << 63) else x
 
 
-def _tiebreak(a: int, b: int, context_seed: int, layer: int) -> int:
-    """Independent pseudorandom coin flip, used only when both candidates' g-values tie
-    (probability 0.5 under Bernoulli g-values — unlike continuous Uniform(0,1), ties are
-    not negligible here, so resolving them with a fixed `a if g_a >= g_b else b` rule would
-    systematically favour whichever candidate torch.multinomial happened to place first,
-    biasing the emitted-token distribution away from p_LM and breaking non-distortionality)."""
-    h = hashlib.sha256(f"tiebreak:{context_seed}:{layer}:{a}:{b}".encode()).hexdigest()
-    return a if (int(h[:8], 16) % 2 == 0) else b
+def _hash_iv(keys: List[int]) -> int:
+    """SHA256 of the per-depth watermarking keys, used as the hash chain's IV
+    (matches the real implementation's use of SHA256 only for this one-time IV
+    derivation -- the actual per-token/per-depth hashing is the LCG above)."""
+    packed = b"".join((k & _MASK64).to_bytes(8, "little") for k in keys)
+    digest = hashlib.sha256(packed).digest()
+    return int.from_bytes(digest, byteorder="big") % ((1 << 63) - 1)
+
+
+def _g_value(ngram_key: int, num_apply_hash: int = 12) -> float:
+    """Binary g-value (0.0/1.0) via 12 hash-accumulation rounds, extracting bit 30
+    of the final hash -- matches get_gvals() in the reference implementation.
+    Uses a signed (sign-extending) right-shift each round to match PyTorch's
+    behaviour on signed int64 tensors."""
+    shift = 64 // num_apply_hash
+    h = ngram_key
+    for _ in range(num_apply_hash):
+        h = _signed64(_accumulate_hash(h, 1)) >> shift
+    return float((h >> 30) & 1)
 
 
 class SynthIDAuctor:
-    """SynthID-Text: tournament sampling with a fixed (non-learned) number of layers.
+    """SynthID-Text: multi-layer probability reweighting via binary g-values.
 
-    `score_function`: "bayesian" (default, matches the paper's own headline results) or
-    "mean" (kept for direct ablation against Bayesian Score — see module docstring).
-    `g_distribution`: "bernoulli" (default, paper-optimal) or "uniform" (ablation only).
+    `score_function`: "bayesian" (default, matches the paper's own headline
+    results) or "mean" (kept for direct ablation against Bayesian Score).
     """
 
     def __init__(self, backbone: LLaMABackbone, theta: float = 2.0,
                  tournament_k: int = 16, secret_key: str = SECRET_KEY,
-                 score_function: str = "bayesian", g_distribution: str = "bernoulli"):
+                 score_function: str = "bayesian", top_k: int = 40,
+                 ngram_len: int = 5, context_history_size: int = 1024):
         self.backbone = backbone
         self.theta = theta  # unused; SynthID-Text has no theta parameter
-        if tournament_k > MAX_PRACTICAL_TOURNAMENT_K:
-            import logging
-            logging.getLogger(__name__).warning(
-                f"tournament_k={tournament_k} exceeds MAX_PRACTICAL_TOURNAMENT_K="
-                f"{MAX_PRACTICAL_TOURNAMENT_K} (the paper's own m=30 default is "
-                f"tournament_k=2^30, computationally intractable to sample candidates for "
-                f"per-token); clamping to {MAX_PRACTICAL_TOURNAMENT_K}."
-            )
-            tournament_k = MAX_PRACTICAL_TOURNAMENT_K
         self.tournament_k = tournament_k
-        self.m_layers = max(1, int(round(math.log2(max(2, tournament_k)))))
+        # Kept for continuity with existing profiles/results (tk=16/64/4096/100000
+        # -> depth=4/6/12/17) -- but cost now scales linearly with depth, not 2^depth,
+        # so this is just a layer count, not a candidate-pool-size proxy anymore.
+        self.depth = max(1, int(round(math.log2(max(2, tournament_k)))))
         self.secret_key = secret_key
         self.score_function = score_function
-        self.g_distribution = g_distribution
+        self.top_k = top_k
+        self.ngram_len = ngram_len
+        self.context_history_size = context_history_size
+
+        # One watermarking key per depth, deterministic from secret_key.
+        self.keys = [
+            int(hashlib.sha256(f"{secret_key}:depth:{i}".encode()).hexdigest()[:16], 16) & _MASK64
+            for i in range(self.depth)
+        ]
+        self.hash_iv = _hash_iv(self.keys)
+        self._seen_contexts: List[int] = []
+
+    def _context_hash(self, context_ids: List[int]) -> int:
+        """Hash of the last (ngram_len-1) context tokens, seeded with hash_iv."""
+        ctx = context_ids[-(self.ngram_len - 1):] if len(context_ids) >= self.ngram_len - 1 else context_ids
+        return _accumulate_hash(self.hash_iv, *ctx) if ctx else self.hash_iv
+
+    def _depth_keys(self, context_hash: int, token_id: int) -> List[int]:
+        """One ngram key per depth for a specific (context, candidate) pair."""
+        h = _accumulate_hash(context_hash, token_id)
+        return [_accumulate_hash(h, k) for k in self.keys]
+
+    def _mark_seen(self, context_hash: int) -> bool:
+        """Returns True if this context was already watermarked this generation
+        (repeated n-gram -> skip watermarking, matching the paper's own handling)."""
+        if context_hash in self._seen_contexts:
+            return True
+        self._seen_contexts.append(context_hash)
+        if len(self._seen_contexts) > self.context_history_size:
+            self._seen_contexts.pop(0)
+        return False
 
     def _tournament_step(self, logits: torch.Tensor, context_ids: List[int]) -> int:
         logits = torch.nan_to_num(logits, nan=0.0, posinf=1e4, neginf=-1e4)
-        probs = torch.softmax(logits, dim=0).clamp(min=0.0)
+        k = min(self.top_k, logits.shape[0])
+        top_vals, top_idx = torch.topk(logits, k)
+        probs = torch.softmax(top_vals, dim=0).clamp(min=0.0)
         total = probs.sum()
         if total <= 0 or not torch.isfinite(total):
             return int(torch.argmax(logits).item())
         probs = probs / total
 
-        n_candidates = 2 ** self.m_layers
-        candidates = torch.multinomial(probs, n_candidates, replacement=True).tolist()
-        context_seed = _synthid_seed(context_ids, self.secret_key)
+        context_hash = self._context_hash(context_ids)
+        if self._mark_seen(context_hash):
+            # Repeated context: sample from the plain (unwatermarked) distribution.
+            idx = int(torch.multinomial(probs, 1).item())
+            return int(top_idx[idx].item())
 
-        survivors = candidates
-        for layer in range(1, self.m_layers + 1):
-            next_round = []
-            for i in range(0, len(survivors), 2):
-                a, b = survivors[i], survivors[i + 1]
-                g_a = _g_value(a, context_seed, layer, self.g_distribution)
-                g_b = _g_value(b, context_seed, layer, self.g_distribution)
-                if g_a > g_b:
-                    winner = a
-                elif g_b > g_a:
-                    winner = b
-                else:
-                    winner = _tiebreak(a, b, context_seed, layer)
-                next_round.append(winner)
-            survivors = next_round
-        return survivors[0]
+        token_ids = top_idx.tolist()
+        g_values = torch.tensor(
+            [[_g_value(dk) for dk in self._depth_keys(context_hash, tid)] for tid in token_ids],
+            dtype=probs.dtype,
+        )  # [top_k, depth]
+
+        for d in range(self.depth):
+            g_d = g_values[:, d]
+            g_mass = (g_d * probs).sum()
+            probs = (probs * (1.0 + g_d - g_mass)).clamp(min=0.0)
+            total = probs.sum()
+            if total <= 0 or not torch.isfinite(total):
+                probs = torch.softmax(top_vals, dim=0)
+                probs = probs / probs.sum()
+                break
+            probs = probs / total
+
+        idx = int(torch.multinomial(probs, 1).item())
+        return int(top_idx[idx].item())
 
     def _g_counts(self, text: str):
-        """Per-(position, layer) g-values for the actual observed tokens, as (sum, n1, n0, count)."""
+        """Per-(position, depth) g-values for the actual observed tokens, skipping
+        positions whose ngram context repeats an earlier one in this same text
+        (matching generation's repeated-context handling)."""
         require_local_tokenizer(self.backbone, "SynthIDAuctor scoring")
         tokenizer = self.backbone.tokenizer
         token_ids = tokenizer.encode(text)
 
+        seen: List[int] = []
         total, n1, n0, count = 0.0, 0, 0, 0
         for i, tid in enumerate(token_ids):
-            context_seed = _synthid_seed(token_ids[:i], self.secret_key)
-            for layer in range(1, self.m_layers + 1):
-                g = _g_value(tid, context_seed, layer, self.g_distribution)
+            context_ids = token_ids[:i]
+            context_hash = self._context_hash(context_ids)
+            if context_hash in seen:
+                continue
+            seen.append(context_hash)
+            for dk in self._depth_keys(context_hash, tid):
+                g = _g_value(dk)
                 total += g
                 count += 1
                 if g >= 0.5:
@@ -176,40 +208,46 @@ class SynthIDAuctor:
         return total, n1, n0, count
 
     def mean_score(self, text: str) -> float:
-        """Mean Score MS(x) — average g-value across all T*m (position, layer) pairs."""
+        """Mean Score MS(x) -- average g-value across all (position, depth) pairs."""
         total, _, _, count = self._g_counts(text)
         return total / count if count else 0.5
 
     def mean_z_score(self, text: str) -> float:
-        """z-test on the Mean Score: null mean 0.5, null variance 1/12 per (t,l) sample
-        (the 1/12 variance is Uniform(0,1)'s; under Bernoulli(0.5) the true null variance
-        is 1/4, but this codebase keeps 1/12 for continuity with earlier results computed
-        before the g_distribution fix — use `score_function="bayesian"` for the corrected,
-        literature-matched default detector instead of tuning this one further)."""
+        """z-test on the Mean Score: null mean 0.5, null variance 1/4 (Bernoulli)."""
         _, _, _, count = self._g_counts(text)
         if count == 0:
             return 0.0
         ms = self.mean_score(text)
-        return (ms - 0.5) / math.sqrt((1.0 / 12.0) / count)
+        return (ms - 0.5) / math.sqrt(0.25 / count)
 
     def bayesian_score(self, text: str) -> float:
-        """Bayesian Score BS(x) (paper Eq. 3), zero-collision closed form — see module
-        docstring. Returns the raw log-likelihood ratio (higher = stronger watermark
-        evidence); `bayesian_z_score` standardises it against the null for thresholding."""
+        """Bayesian-style log-likelihood-ratio score, zero-collision closed form:
+        P(g=1|watermarked)=0.75, P(g=0|watermarked)=0.25 vs P(g|unwatermarked)=0.5
+        (see module history / arXiv:2603.03410 Theorem 15 at collision prob=0).
+        This closed form was derived for a bracket-elimination tournament, not this
+        file's current multiplicative-reweight mechanism -- kept as a directionally
+        reasonable detector (same qualitative shape: rewards more g=1 evidence,
+        non-diluting with depth), not a re-derived exact likelihood for this
+        specific reweighting scheme."""
         _, n1, n0, _ = self._g_counts(text)
-        return n1 * _LLR_G1 + n0 * _LLR_G0
+        llr_g1 = math.log(0.75 / 0.5)
+        llr_g0 = math.log(0.25 / 0.5)
+        return n1 * llr_g1 + n0 * llr_g0
 
     def bayesian_z_score(self, text: str) -> float:
         _, _, _, count = self._g_counts(text)
         if count == 0:
             return 0.0
+        llr_g1 = math.log(0.75 / 0.5)
+        llr_g0 = math.log(0.25 / 0.5)
+        null_mean = 0.5 * llr_g1 + 0.5 * llr_g0
+        null_var = 0.5 * (llr_g1 - null_mean) ** 2 + 0.5 * (llr_g0 - null_mean) ** 2
         llr = self.bayesian_score(text)
-        return (llr - count * _LLR_NULL_MEAN) / math.sqrt(_LLR_NULL_VAR * count)
+        return (llr - count * null_mean) / math.sqrt(null_var * count)
 
     def z_score(self, text: str) -> float:
-        """Dispatches to the configured `score_function` ("bayesian" default, "mean" for
-        ablation) — see module docstring for why Bayesian is now the literature-matched
-        default."""
+        """Dispatches to the configured `score_function` ("bayesian" default,
+        "mean" for ablation)."""
         if self.score_function == "mean":
             return self.mean_z_score(text)
         return self.bayesian_z_score(text)
@@ -226,6 +264,7 @@ class SynthIDAuctor:
 
     def generate(self, prompt: str, max_tokens: int = 200) -> str:
         require_local_tokenizer(self.backbone, "SynthIDAuctor.generate")
+        self._seen_contexts = []
 
         tokenizer = self.backbone.tokenizer
         formatted_prompt = prompt

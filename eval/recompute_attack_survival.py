@@ -107,37 +107,22 @@ def _dipmark_z(text: str, tokenizer, window: int = 5) -> float:
 
 
 def _synthid_z(text: str, tokenizer, tournament_k: int = 16,
-               score_function: str = "bayesian", g_distribution: str = "bernoulli") -> float:
-    """Delegates to auctor_synthid's exact hash/window/g-value logic. Unlike SIR/DiPmark,
-    SynthID's score statistics only need token IDs and hash values — no model forward pass —
-    so this is a valid lightweight (tokenizer-only) recompute, like KGW/PECCAVI. Defaults to
-    the Bayesian Score over Bernoulli(0.5) g-values, matching the literature-corrected
-    defaults in auctor_synthid.py (see that module's docstring); pass score_function="mean"
-    to reproduce the old Mean-Score-only behaviour for ablation."""
-    from peccavi.auctor_synthid import _synthid_seed, _g_value, _LLR_G0, _LLR_G1, _LLR_NULL_MEAN, _LLR_NULL_VAR
-    m_layers = max(1, int(round(math.log2(max(2, tournament_k)))))
-    token_ids = tokenizer.encode(text)
-    n = len(token_ids)
-    if n == 0:
-        return 0.0
-    total, n1, n0, count = 0.0, 0, 0, 0
-    for i, tid in enumerate(token_ids):
-        context_seed = _synthid_seed(token_ids[:i], SECRET_KEY)
-        for layer in range(1, m_layers + 1):
-            g = _g_value(tid, context_seed, layer, g_distribution)
-            total += g
-            count += 1
-            if g >= 0.5:
-                n1 += 1
-            else:
-                n0 += 1
-    if count == 0:
-        return 0.0
-    if score_function == "mean":
-        ms = total / count
-        return (ms - 0.5) / math.sqrt((1.0 / 12.0) / count)
-    llr = n1 * _LLR_G1 + n0 * _LLR_G0
-    return (llr - count * _LLR_NULL_MEAN) / math.sqrt(_LLR_NULL_VAR * count)
+               score_function: str = "bayesian") -> float:
+    """Reuses SynthIDAuctor's real g-value/scoring logic directly instead of duplicating
+    it a second time here (the previous version of this function re-implemented the hash
+    mechanism independently, which drifted out of sync when auctor_synthid.py's algorithm
+    was rewritten to match the real published one). Detection needs no model forward pass
+    -- only token IDs and hashes -- so SynthIDAuctor can be constructed with a bare
+    tokenizer-only stand-in backbone for this lightweight recompute, like KGW/PECCAVI."""
+    from peccavi.auctor_synthid import SynthIDAuctor
+
+    class _TokenizerOnlyBackbone:
+        pass
+
+    fake_backbone = _TokenizerOnlyBackbone()
+    fake_backbone.tokenizer = tokenizer
+    generator = SynthIDAuctor(fake_backbone, tournament_k=tournament_k, score_function=score_function)
+    return generator.z_score(text)
 
 
 def _get_z_fn(mode: str, tokenizer):

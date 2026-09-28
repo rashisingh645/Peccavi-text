@@ -69,7 +69,6 @@ def run_peccavi(
     dipmark_window: int = 5,
     synthid_tournament_k: int = 16,
     synthid_score_function: str = "bayesian",
-    synthid_g_distribution: str = "bernoulli",
     lam: float = 0.6,
     nu: float = 0.4,
     mu_ppl: float = 0.0,
@@ -119,8 +118,7 @@ def run_peccavi(
     elif watermark_mode == "synthid":
         generator = SynthIDAuctor(backbone, theta=theta_init,
                                   tournament_k=synthid_tournament_k,
-                                  score_function=synthid_score_function,
-                                  g_distribution=synthid_g_distribution)
+                                  score_function=synthid_score_function)
         magister = None
     elif watermark_mode == "peccavi_df":
         # Distortion-free PECCAVI: DiPmark's provably distribution-preserving reweight
