@@ -84,6 +84,14 @@ class SIRAuctor:
         with torch.no_grad():
             raw = self._transform_model(e.unsqueeze(0)).squeeze(0)
             compressed = torch.tanh(self._k2 * raw)
+            # normalization_loss only balances the mean across the *training batch*, never
+            # any single example's own proj_dim-length vector -- so for any one context
+            # (especially one unlike the narrow training corpus), the raw output can carry a
+            # real, consistent non-zero mean. Confirmed empirically: baseline (unwatermarked)
+            # text scored z~-10 to -15, just as negative as watermarked text, proving the
+            # null calibration was broken, not that watermarking failed to embed. Re-centering
+            # each individual vector to exactly zero-mean here fixes that without retraining.
+            compressed = compressed - compressed.mean()
         return compressed[self._mapping_t]
 
     # ------------------------------------------------------------------ #
