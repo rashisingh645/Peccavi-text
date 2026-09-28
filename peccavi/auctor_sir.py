@@ -28,6 +28,7 @@ z-test here is this codebase's standard z_score()/detect() convention layered on
 from __future__ import annotations
 import hashlib
 import math
+import os
 import statistics
 import torch
 from backbone.model import LLaMABackbone, require_local_tokenizer
@@ -64,10 +65,20 @@ class SIRAuctor:
 
     def _ensure_model(self):
         if self._transform_model is None:
+            train_texts = None
+            if not os.path.exists(self.checkpoint_path):
+                # No cached checkpoint -> about to actually train. Use Praeco's existing
+                # stratified multi-domain prompt pool (Reddit/arctic, arxiv, Gutenberg, C4)
+                # instead of the arxiv-abstracts-only default, since training on one narrow
+                # domain and evaluating on all four is exactly the kind of out-of-distribution
+                # mismatch that caused SIR's below-chance AUC bug (see auctor_sir.py history).
+                from peccavi.praeco import Praeco
+                train_texts = Praeco().prompts
             self._transform_model, self._k2 = load_or_train_transform_model(
                 checkpoint_path=self.checkpoint_path,
                 device=self.embed_device,
                 proj_dim=self.proj_dim,
+                texts=train_texts,
             )
 
     def _ensure_mapping(self, vocab_size: int):

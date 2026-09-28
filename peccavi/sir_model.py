@@ -140,6 +140,7 @@ def vocab_mapping(vocab_size: int, proj_dim: int, seed: int) -> np.ndarray:
 def train_transform_model(
     corpus_path: str = "datasets/arxiv_5000.csv",
     text_column: str = "experiment",
+    texts: List[str] | None = None,
     checkpoint_path: str = "results/sir_transform_model.pt",
     embedding_model: str = DEFAULT_EMBEDDING_MODEL,
     proj_dim: int = 1000,
@@ -167,21 +168,23 @@ def train_transform_model(
     device: str = "cpu",
 ) -> TransformModel:
     """
-    Trains T on this codebase's existing datasets/arxiv_5000.csv corpus, mirroring the
-    official repo's two-step generate_embeddings.py + train_watermark_model.py pipeline
-    but folded into one lazy call. Embeddings are computed once per run; the MLP itself
-    trains fast (small network, in-memory vectors). Not the paper's original checkpoint
-    or exact training corpus — a faithful reproduction of the described objective on
-    locally available text.
+    Trains T, mirroring the official repo's two-step generate_embeddings.py +
+    train_watermark_model.py pipeline but folded into one lazy call. Embeddings are
+    computed once per run; the MLP itself trains fast (small network, in-memory
+    vectors). Pass `texts` directly to train on a specific corpus (e.g. Praeco's
+    stratified multi-domain prompt pool, matching what SIRAuctor actually does);
+    otherwise falls back to reading `corpus_path`'s single CSV. Not the paper's
+    original checkpoint or exact training corpus (they use WikiText-103) — a
+    faithful reproduction of the described training objective on available text.
     """
-    import csv
-
-    texts: List[str] = []
-    with open(corpus_path, newline="", encoding="utf-8") as f:
-        for row in csv.DictReader(f):
-            text = (row.get(text_column) or "").strip()
-            if text:
-                texts.append(text)
+    if texts is None:
+        import csv
+        texts = []
+        with open(corpus_path, newline="", encoding="utf-8") as f:
+            for row in csv.DictReader(f):
+                text = (row.get(text_column) or "").strip()
+                if text:
+                    texts.append(text)
     texts = texts[:max_examples]
     if len(texts) < batch_size:
         raise ValueError(f"Need at least {batch_size} training texts, got {len(texts)}")

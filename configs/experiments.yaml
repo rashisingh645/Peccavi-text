@@ -190,7 +190,7 @@ profiles:
       alpha_init: 0.3       # must stay in (0, 0.5]
       alpha_min: 0.05
       alpha_max: 0.49
-      window: 5             # context window for the permutation seed, matches dipmark_baseline
+      window: 1             # matches the paper's own experiments (texture key = most recent token only)
       adaptive_theta: true
     agents:
       scriba_n_variants: 10
@@ -217,7 +217,7 @@ profiles:
       alpha_init: 0.3
       alpha_min: 0.05
       alpha_max: 0.49
-      window: 5
+      window: 1
       adaptive_theta: true
     agents:
       scriba_n_variants: 3
@@ -367,7 +367,7 @@ profiles:
     watermarking:
       delta: 2.0
       gamma: 0.5
-      window: 5
+      window: 1
       secret_key: "PECCAVI-SECRET"
       watermark_mode: "dipmark"
     agents:
@@ -406,7 +406,7 @@ profiles:
       theta_init: 2.0
       delta: 2.0
       gamma: 0.5
-      window: 5
+      window: 1
       secret_key: "PECCAVI-SECRET"
       watermark_mode: "dipmark"
     agents:
