@@ -229,6 +229,7 @@ def mode_sir(backbone, cfg, args):
         n_attack_samples=pl_cfg.get("n_attack_samples", 100),
         max_tokens=pl_cfg.get("max_tokens", 100),
         seed=seed,
+        save_details=getattr(args, "save_details", False),
     )
 
     output_path = getattr(args, "output", "./results/sir_baseline.json")
@@ -434,6 +435,10 @@ def build_parser() -> argparse.ArgumentParser:
                    help=f"Path to the consolidated experiments YAML (default: {DEFAULT_CONFIG_FILE})")
     p.add_argument("--seed", type=int, default=42,
                    help="Random seed for reproducibility")
+    p.add_argument("--save-details", action="store_true",
+                   help="Include raw eval/attack sample texts and z-scores in the output "
+                        "JSON (normally stripped) -- for diagnosing a specific baseline's "
+                        "detector, not for regular runs (bloats the output file).")
     return p
 
 

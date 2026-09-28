@@ -417,6 +417,30 @@ profiles:
       n_attack_samples: 100
       max_tokens: 250
 
+  sir_diagnostic:
+    # Small-scale SIR run to diagnose the below-chance AUC (0.461) seen in
+    # sir_matched_long -- reuses the already-trained results/sir_transform_model.pt
+    # checkpoint (no retraining), just at a tiny n_eval/n_attack so it finishes in
+    # minutes. Run with `python main.py --mode sir --profile sir_diagnostic
+    # --save-details --output results/sir_diagnostic.json` to get real generated
+    # text + per-token z-scores for inspection, since normal runs strip that detail.
+    model: *model_llama
+    watermarking:
+      theta_init: 2.0
+      delta: 2.0
+      secret_key: "PECCAVI-SECRET"
+      watermark_mode: "sir"
+      embedding_model: "perceptiveshawty/compositional-bert-large-uncased"
+      checkpoint_path: "results/sir_transform_model.pt"
+      proj_dim: 1000
+    agents:
+      scriba_n_variants: 3
+    policy_learning:
+      generations: 0
+      n_eval_samples: 15
+      n_attack_samples: 15
+      max_tokens: 250
+
   synthid_baseline:
     # SynthID-Text (Dathathri et al., Nature 2024). Genuine tournament sampling
     # (binary elimination over 2^m i.i.d. samples, m=log2(tournament_k) layers).
