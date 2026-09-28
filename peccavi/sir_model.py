@@ -144,14 +144,24 @@ def train_transform_model(
     embedding_model: str = DEFAULT_EMBEDDING_MODEL,
     proj_dim: int = 1000,
     hidden_dim: int = 512,
-    k1: float = 1.0,
-    k2: float = 1.0,
+    # Paper's stated values (Section 4.3): k1=20, k2=1000, lam1=10, lam2=0.1, lr=1e-5.
+    # Previous defaults here (all 1.0, lr=1e-3) were unrelated guesses, not the paper's
+    # values -- k2 in particular matters a lot: the paper's tanh(k2*raw) is designed to
+    # saturate to near-exclusively +/-1 ("almost exclusively 1 or -1" per their own text),
+    # giving a strong near-binary signal; k2=1.0 never saturates, producing a much weaker,
+    # unsaturated continuous signal instead.
+    k1: float = 20.0,
+    k2: float = 1000.0,
     R: float = 1.0,
-    lam1: float = 1.0,
-    lam2: float = 1.0,
+    lam1: float = 10.0,
+    lam2: float = 0.1,
     batch_size: int = 32,
-    epochs: int = 20,
-    lr: float = 1e-3,
+    # Bumped from 20 -- the paper doesn't state an epoch count, but dropping lr 100x
+    # (1e-3 -> 1e-5, matching the paper's stated value) means 20 epochs is very unlikely
+    # to still converge. Training this small network is cheap (~6s for 20 epochs on 2000
+    # GPU-embedded examples), so there's no real cost to training longer here.
+    epochs: int = 200,
+    lr: float = 1e-5,
     max_examples: int = 2000,
     seed: int = 42,
     device: str = "cpu",
