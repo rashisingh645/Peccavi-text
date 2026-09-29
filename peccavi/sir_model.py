@@ -86,7 +86,7 @@ class TransformModel(nn.Module):
     used 1000, an unrelated guess made before the repo's actual defaults were checked.
     """
 
-    def __init__(self, input_dim: int = 1024, hidden_dim: int = 512, output_dim: int = 300):
+    def __init__(self, input_dim: int = 1024, hidden_dim: int = 500, output_dim: int = 300):
         super().__init__()
         self.l1 = nn.Linear(input_dim, hidden_dim)
         self.l2 = nn.Linear(hidden_dim, hidden_dim)
@@ -188,7 +188,7 @@ def train_transform_model(
     checkpoint_path: str = "results/sir_transform_model.pt",
     embedding_model: str = DEFAULT_EMBEDDING_MODEL,
     proj_dim: int = 300,
-    hidden_dim: int = 512,
+    hidden_dim: int = 500,
     # k1/k2 confirmed against the reference repo's actual hardcoded constants: k1=20 is the
     # "20" inside train_watermark_model.py's loss_fn's tanh(20*(sim - median)); k2=1000 is
     # the "1000" inside watermark.py's scale_vector's tanh(1000*v_minus_mean) (applied at
