@@ -164,7 +164,7 @@ class SynthIDAuctor:
         token_ids = top_idx.tolist()
         g_values = torch.tensor(
             [[_g_value(dk) for dk in self._depth_keys(context_hash, tid)] for tid in token_ids],
-            dtype=probs.dtype,
+            dtype=probs.dtype, device=probs.device,
         )  # [top_k, depth]
 
         for d in range(self.depth):
