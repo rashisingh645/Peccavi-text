@@ -192,22 +192,24 @@ def train_transform_model(
     # k1/k2 confirmed against the reference repo's actual hardcoded constants: k1=20 is the
     # "20" inside train_watermark_model.py's loss_fn's tanh(20*(sim - median)); k2=1000 is
     # the "1000" inside watermark.py's scale_vector's tanh(1000*v_minus_mean) (applied at
-    # generation/detection time, not here). lam1/lam2 and the optimizer/schedule below now
-    # match train_watermark_model.py's own defaults exactly (lambda1=0.1, lambda2=1 in its
-    # loss_fn; SGD lr=0.006, weight_decay=0.2, StepLR(step_size=200, gamma=0.1), epochs=2000)
-    # -- superseding an earlier version of this file that used lam1=10, lam2=0.1, Adam,
-    # lr=1e-5, epochs=200 based on a reading of the paper's prose (Section 4.3), which
-    # conflicts with the repo's own code on these particular values.
+    # generation/detection time, not here).
+    #
+    # lam1/lam2/optimizer reverted back to the paper's own explicit statement after directly
+    # quoting it (Section 6.1): "Hyperparameters are set to k1=20, k2=1000, lambda1=10,
+    # lambda2=0.1, and the Adam optimizer (lr=1e-5) is used for training." A previous version
+    # of this file switched to the repo's own train_watermark_model.py loss_fn/optimizer
+    # defaults (lambda1=0.1, lambda2=1, SGD lr=0.006/weight_decay=0.2/StepLR/epochs=2000) on
+    # the reasoning that "the repo's code should take precedence over a reading of the
+    # paper's prose" -- but this isn't inferred from surrounding prose, it's the paper's own
+    # unambiguous numeric statement, directly contradicting the repo's unrelated CLI-script
+    # defaults. The paper's explicit statement wins here.
     k1: float = 20.0,
     k2: float = 1000.0,
-    lam1: float = 0.1,
-    lam2: float = 1.0,
+    lam1: float = 10.0,
+    lam2: float = 0.1,
     batch_size: int = 32,
-    epochs: int = 2000,
-    lr: float = 0.006,
-    weight_decay: float = 0.2,
-    lr_step_size: int = 200,
-    lr_gamma: float = 0.1,
+    epochs: int = 200,
+    lr: float = 1e-5,
     max_examples: int = 2000,
     seed: int = 42,
     device: str = "cpu",
@@ -243,8 +245,7 @@ def train_transform_model(
 
     torch.manual_seed(seed)
     model = TransformModel(input_dim=embeddings.shape[1], hidden_dim=hidden_dim, output_dim=proj_dim).to(device)
-    opt = torch.optim.SGD(model.parameters(), lr=lr, weight_decay=weight_decay)
-    scheduler = torch.optim.lr_scheduler.StepLR(opt, step_size=lr_step_size, gamma=lr_gamma)
+    opt = torch.optim.Adam(model.parameters(), lr=lr)
 
     n = embeddings.shape[0]
     n_pair_batches = n // (2 * batch_size)
@@ -263,8 +264,7 @@ def train_transform_model(
             opt.step()
             total_loss += loss.item()
             n_batches += 1
-        scheduler.step()
-        if (epoch + 1) % 50 == 0 or epoch == epochs - 1:
+        if (epoch + 1) % 20 == 0 or epoch == epochs - 1:
             logger.info(f"SIR transform model epoch {epoch + 1}/{epochs} loss={total_loss / max(n_batches, 1):.4f}")
 
     os.makedirs(os.path.dirname(checkpoint_path) or ".", exist_ok=True)
